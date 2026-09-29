@@ -4,7 +4,7 @@
   "description": "A gesture-controlled glowing magic circle. No hands touch the keyboard.",
   "type": "module",
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
     "start": "node server.mjs",

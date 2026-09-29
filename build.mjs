@@ -128,7 +128,7 @@ async function main() {
   const cssEntry = await buildStyles();
   await copyVendor();
   await buildHtml(appEntry, cssEntry);
-  // Deploy config lives at the repo root (or in the CI workflow), so it stays
+  // vercel.json is read from the repo root by Vercel itself before the build runs, so it stays
   // out of dist/ — only assets the deployed site needs to actually serve go here.
   for (const extra of ['manifest.json', 'sw.js', 'icons', '_headers']) {
     await copyIfExists(extra);
