@@ -1,15 +1,18 @@
 // Zero-dependency static server for SIGIL. The camera API needs a secure context: http://localhost is one.
-//   node server.mjs [port]      ->  http://localhost:5173
+//   node scripts/dev-server.mjs [port] [dir]   ->  http://localhost:5173
+// Dev only (it lives in scripts/ and is .vercelignore'd so a host never mistakes it for a server entry).
+// With [dir] it serves that folder as-is (e.g. `dist`, to check a production build); without, the repo root,
+// with vendor/ aliased to node_modules.
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
+const ROOT = resolve(process.argv[3] ? resolve(process.argv[3]) : fileURLToPath(new URL('..', import.meta.url)));
 const PORT = Number(process.argv[2] || process.env.PORT || 5173);
 // vendor/ is where the app (and dist/) find third-party code and the model; in dev it's served straight from
 // their real homes so there is one URL scheme everywhere.
-const VENDOR = [['/vendor/three/', 'node_modules/three/'], ['/vendor/mediapipe/', 'node_modules/@mediapipe/tasks-vision/'], ['/vendor/models/', 'models/']];
+const VENDOR = process.argv[3] ? [] : [['/vendor/three/', 'node_modules/three/'], ['/vendor/mediapipe/', 'node_modules/@mediapipe/tasks-vision/'], ['/vendor/models/', 'models/']];
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.wasm': 'application/wasm', '.task': 'application/octet-stream',

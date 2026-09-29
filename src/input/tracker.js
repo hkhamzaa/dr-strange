@@ -6,7 +6,7 @@
 import { CFG } from '../config.js';
 
 // Third-party code and the model live under vendor/ (not node_modules/: some hosts strip folders with
-// that name from static output). server.mjs aliases vendor/ to node_modules in dev; build.mjs copies it.
+// that name from static output). scripts/dev-server.mjs aliases vendor/ to node_modules in dev; build.mjs copies it.
 const VISION = new URL('vendor/mediapipe/vision_bundle.mjs', location.href).href;
 const WASM = new URL('vendor/mediapipe/wasm', location.href).href;
 const MODEL = new URL('vendor/models/hand_landmarker.task', location.href).href;

@@ -16,6 +16,8 @@ npm install
 npm start
 ```
 
+`npm start` runs `scripts/dev-server.mjs`, a zero-dependency static server (`node scripts/dev-server.mjs [port] [dir]`; pass `dist` to check a production build).
+
 Open `http://localhost:5173` (camera access needs a secure context — `localhost` counts, a plain
 `http://` IP address does not), click **Enable camera**, and hold up a hand. The live, mirrored
 camera fills the screen and the sigil casts in on your palm the moment it's in view (see **AR

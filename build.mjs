@@ -2,7 +2,7 @@
 // can cache them forever) and rewrites the relative import specifiers between them to match.
 // Vendor code (three, MediaPipe) and large binary assets (wasm, the hand model) are copied
 // byte-for-byte into dist/vendor/ (NOT node_modules/: some hosts strip folders with that name from
-// static output). The importmap in index.html and tracker.js point at vendor/, and server.mjs serves
+// static output). The importmap in index.html and tracker.js point at vendor/, and scripts/dev-server.mjs serves
 // the same URLs from node_modules in dev. Their own version pin is the cache key.
 import { createHash } from 'node:crypto';
 import { mkdir, readdir, readFile, writeFile, rm, cp, stat } from 'node:fs/promises';
