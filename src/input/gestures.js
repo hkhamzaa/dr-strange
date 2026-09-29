@@ -1,22 +1,44 @@
-// Hand pose (OPEN / FIST / PEACE / OTHER), continuous openness, and snap detection from MediaPipe's
-// 21 normalized landmarks. Port of wondersnap/gestures.py (same thresholds) + openness and peace sign.
+// Hand pose, continuous openness and the split (three-finger) pose from MediaPipe's 21 landmarks.
+// Every test is a ratio of distances, so it's rotation-invariant — but only if x and y are in the
+// same units. MediaPipe normalizes them separately (x by width, y by height), so callers must pass
+// aspect-corrected landmarks (x * width/height); the Controller does that before classifying.
 export const WRIST = 0, THUMB_TIP = 4, MIDDLE_MCP = 9, MIDDLE_TIP = 12;
 export const TIPS = [8, 12, 16, 20], PIPS = [6, 10, 14, 18], MCPS = [5, 9, 13, 17];
-export const OPEN = 'open', FIST = 'fist', PEACE = 'peace', POINT = 'point', OTHER = 'other', NONE = 'none';
+export const OPEN = 'open', FIST = 'fist', PEACE = 'peace', POINT = 'point', THREE = 'three', OTHER = 'other', NONE = 'none';
 
 const d = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 export const handScale = (lm) => Math.max(d(lm[WRIST], lm[MIDDLE_MCP]), 1e-6);
 
-/** Instant pose. Finger extended = tip clearly farther from wrist than its PIP joint (rotation-invariant). */
+// [strict, loose] thresholds — the loose set is what the split pose uses once it's already on, so
+// a borderline frame can't knock it off (hysteresis on the shape itself, on top of the dwell gate).
+const EXT = [1.1, 1.0], CURL = [1.25, 1.45], THUMB = [0.55, 0.42];
+
+const ext = (lm, i, k = EXT[0]) => d(lm[TIPS[i]], lm[WRIST]) > d(lm[PIPS[i]], lm[WRIST]) * k;
+const curled = (lm, i, k = CURL[0]) => d(lm[TIPS[i]], lm[WRIST]) < d(lm[MCPS[i]], lm[WRIST]) * k;
+
+/** Thumb out: tip well clear of the index knuckle, and farther from the wrist than its own IP joint. */
+export function thumbOut(lm, k = THUMB[0]) {
+  return d(lm[THUMB_TIP], lm[5]) > handScale(lm) * k && d(lm[THUMB_TIP], lm[WRIST]) > d(lm[3], lm[WRIST]);
+}
+
+/** Thumb + index + middle extended, ring + pinky curled. `loose` widens every threshold. */
+export function isThree(lm, loose = false) {
+  if (!lm) return false;
+  const j = loose ? 1 : 0;
+  return thumbOut(lm, THUMB[j]) && ext(lm, 0, EXT[j]) && ext(lm, 1, EXT[j]) && curled(lm, 2, CURL[j]) && curled(lm, 3, CURL[j]);
+}
+
+/** Instant pose. OPEN = at least 4 of 5 digits out (so the thumb is optional). */
 export function classify(lm) {
   if (!lm) return NONE;
-  const ext = TIPS.map((t, i) => d(lm[t], lm[WRIST]) > d(lm[PIPS[i]], lm[WRIST]) * 1.15);
-  const curled = TIPS.map((t, i) => d(lm[t], lm[WRIST]) < d(lm[MCPS[i]], lm[WRIST]) * 1.25);
-  const thumbOut = d(lm[THUMB_TIP], lm[17]) > handScale(lm) * 1.1;        // thumb tip far from pinky base
-  if (ext.every(Boolean) && thumbOut) return OPEN;
-  if (curled.every(Boolean)) return FIST;
-  if (ext[0] && ext[1] && curled[2] && curled[3]) return PEACE;           // ✌ index + middle up
-  if (ext[0] && curled[1] && curled[2] && curled[3]) return POINT;        // ☝ index finger only
+  const e0 = ext(lm, 0), e1 = ext(lm, 1), e2 = ext(lm, 2), e3 = ext(lm, 3);
+  const th = thumbOut(lm);
+  const c0 = curled(lm, 0), c1 = curled(lm, 1), c2 = curled(lm, 2), c3 = curled(lm, 3);
+  if (th && e0 && e1 && c2 && c3) return THREE;
+  if (e0 + e1 + e2 + e3 + th >= 4) return OPEN;
+  if (c0 && c1 && c2 && c3) return FIST;
+  if (e0 && e1 && c2 && c3) return PEACE;
+  if (e0 && c1 && c2 && c3) return POINT;
   return OTHER;
 }
 
@@ -25,8 +47,6 @@ export function pinched(lm) {
   if (!lm) return false;
   return d(lm[THUMB_TIP], lm[8]) / handScale(lm) < 0.32 && classify(lm) !== FIST;
 }
-
-export const middleExtended = (lm) => d(lm[MIDDLE_TIP], lm[WRIST]) > d(lm[10], lm[WRIST]) * 1.15;
 
 const clamp01 = (x) => Math.min(1, Math.max(0, x));
 /** How open the hand is, 0 = tight fist .. 1 = fully open (fingers 80 %, thumb 20 %). */
@@ -41,9 +61,9 @@ export function openness(lm) {
   return 0.8 * (f / 4) + 0.2 * thumb;
 }
 
-/** A pose must be seen for `hold` consecutive frames (per-pose override) before it becomes the stable pose. */
+/** A pose must be seen for `hold` consecutive frames before it becomes the stable pose. */
 export class PoseDebouncer {
-  constructor(hold = 4, holdFor = { [PEACE]: 6 }) {
+  constructor(hold = 3, holdFor = {}) {
     this.hold = hold; this.holdFor = holdFor;
     this.stable = NONE; this.cand = NONE; this.n = 0;
   }
@@ -53,38 +73,5 @@ export class PoseDebouncer {
     let changed = false;
     if (this.n >= (this.holdFor[pose] ?? this.hold) && pose !== this.stable) { this.stable = pose; changed = true; }
     return [this.stable, changed];
-  }
-}
-
-/** Thumb+middle tips pressed, then released fast. A tracking dropout (motion blur) between press and
- *  release grants extra time. Rejects: slow opening, held pinch, a fist opening. */
-export class SnapDetector {
-  constructor({ close = 0.35, open = 0.75, maxReleaseS = 0.1, cooldownS = 0.8, dropoutS = 0.15 } = {}) {
-    Object.assign(this, { close, open, maxReleaseS, cooldownS, dropoutS });
-    this.pressedAt = null; this.hadDropout = false; this.lastFire = -1e9;
-  }
-  update(lm, t) {
-    if (!lm) {
-      if (this.pressedAt !== null) {
-        if (t - this.pressedAt > this.maxReleaseS + this.dropoutS) this.pressedAt = null;
-        else this.hadDropout = true;
-      }
-      return false;
-    }
-    const r = d(lm[THUMB_TIP], lm[MIDDLE_TIP]) / handScale(lm);
-    if (r < this.close) {
-      // a closed fist also brings thumb and middle tip together: that is not a snap "press"
-      if (classify(lm) === FIST) this.pressedAt = null;
-      else { this.pressedAt = t; this.hadDropout = false; }
-      return false;
-    }
-    if (this.pressedAt === null) return false;
-    if (t - this.pressedAt > this.maxReleaseS + (this.hadDropout ? this.dropoutS : 0)) { this.pressedAt = null; return false; }
-    if (r > this.open) {
-      this.pressedAt = null;
-      if (middleExtended(lm)) return false;            // real snap: the middle finger slams DOWN into the palm
-      if (t - this.lastFire >= this.cooldownS) { this.lastFire = t; return true; }
-    }
-    return false;
   }
 }

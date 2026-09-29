@@ -40,14 +40,10 @@ export const CFG = {
   },
 
   reveal: {
-    castS: 1.2,                                 // total time for cast() to sweep outer -> inner
+    castS: 0.9,                                 // total time for cast() to sweep outer -> inner
+    uncastS: 0.4,                               // the fast fade once the hand is gone
     staggerFrac: 0.55,                          // fraction of castS given to inter-component stagger vs each component's own sweep
     edgeBoost: 2.2,                             // brightness multiplier at the sweeping edge
-  },
-
-  explode: {
-    depthSpread: 0.9,                           // world units components fly apart along z at explode(1)
-    outSpread: 0.35,                            // world units components fly apart radially at explode(1)
   },
 
   sizePresets: {
@@ -55,16 +51,27 @@ export const CFG = {
     mid: 1.0,
     full: 1.4,
   },
-  sizeTransitionS: 0.7,
+  sizeTransitionS: 0.1,                         // time constant the whole-sigil scale chases its target with
 
+  // Render-side chase. Detection already delivers One-Euro-filtered targets at camera rate; these
+  // short exponential time constants just interpolate between those updates at display rate.
   anchor: {
     mode: qs.get('anchor') || 'hand',           // 'hand' | 'stage'
-    followTau: 0.09,                            // exponential-smoothing time constant for palm -> world position
-    rollTau: 0.12,
-    releaseAfterS: 0.4,                         // no visible hand for this long -> ease back to stage centre
-    releaseTau: 0.5,
-    followGain: 1.15,                           // how far the sigil drifts across the frame vs. the palm's travel
-    tiltGain: 0.6,                              // hand roll -> sigil z-rotation
+    followTau: 0.07,
+    rollTau: 0.07,
+    tiltTau: 0.22,
+    followGain: 1.0,                            // 1 = the sigil sits exactly on the palm
+    rollGain: 1.0,                              // hand roll -> sigil rotation, one to one
+  },
+
+  // One-Euro parameters per signal (Casiez et al.): minCutoff Hz = smoothing when still, beta =
+  // how fast the cutoff opens up with speed. Units differ per signal, hence separate rows.
+  filter: {
+    landmark: { minCutoff: 2.0, beta: 6.0, dCutoff: 1.0 },
+    palm: { minCutoff: 1.2, beta: 5.0, dCutoff: 1.0 },
+    roll: { minCutoff: 1.0, beta: 0.6, dCutoff: 1.0 },
+    openness: { minCutoff: 1.5, beta: 1.5, dCutoff: 1.0 },
+    scale: { minCutoff: 1.0, beta: 1.0, dCutoff: 1.0 },
   },
 
   background: {
@@ -92,24 +99,18 @@ export const CFG = {
 };
 
 // ---------------------------------------------------------------------------------------------
-// Phase 2: the gesture -> intent table. One row per gesture, naming the intent(s) it emits and
-// every tunable that shapes it — dwell/arm time before a continuous gesture is trusted, release
-// time before it lets go, and cooldowns on one-shot triggers. The mapper (src/input/mapper.js)
-// reads this table; it holds no thresholds of its own.
+// The gesture -> intent table. Presence and pose only: every hand drives its own sigil through
+// these same rows. The mapper (src/input/mapper.js) and the split-pose gate in controller.js read
+// this table; neither holds thresholds of its own.
 export const GESTURE_MAP = {
-  snap: { intent: 'summon | dismiss', note: 'reuses gestures.js SnapDetector, which has its own 0.8s cooldown' },
-  openHold: { intent: 'summon', holdS: 0.5, chargeGlow: 0.22, note: 'DORMANT-only fallback for when a snap is missed' },
-  resize: { intent: 'resize', tau: 0.16, note: 'openness -> size, suspended while pinching so it does not fight explode' },
-  explode: { intent: 'explode', scaleRange: 0.4, dirSign: -1, releaseEaseS: 0.6, armS: 0.05, releaseS: 0.15 },
-  soloCycle: { intent: 'solo | regroup', cooldownS: 0.7, armS: 0.08, releaseS: 0.2 },
-  spin: { intent: 'spin', gain: 2.6, min: 0.15, max: 4, easeBackS: 1.5, armS: 0.08, releaseS: 0.2 },
-  tilt: { intent: 'tilt', tau: 0.22, clampRad: 0.32 },
+  presence: { intent: 'summon | dismiss', confirmFrames: 2, graceS: 0.5, note: 'hand appears -> cast; gone past the grace -> fast uncast' },
+  size: { intent: 'resize', note: 'normalized openness -> size, fist = smol .. open = full; frozen while the split pose is arming or held' },
+  roll: { intent: '(follow rule)', note: 'hand roll -> sigil rotation one to one; layers keep their own counter-spin' },
+  split: { intent: 'explode', armS: 0.15, releaseS: 0.12, freezeLookbackS: 0.3, note: 'thumb + index + middle out, ring + pinky curled' },
 };
 
 CFG.gestures = {
-  handLost: { freezeAfterS: 0.4, idleAfterS: 6.0 },   // no hand: freeze continuous values, then ease spin/tilt to rest
-  pulse: { amount: 0.9, flashTau: 0.22 },              // brightness surge on every recognized gesture
-  hysteresis: { poseArmS: 0.08, poseReleaseS: 0.2 },   // shared default arm/release for pose-gated continuous gestures
+  pulse: { amount: 0.9, flashTau: 0.22 },              // brightness surge on a recognized gesture
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -133,8 +134,8 @@ export const LAYERS = [
 ];
 
 // Component membership + default (assembled) local transform. explodeOut/explodeZ scale how far
-// this component drifts, relative to CFG.explode.*, so the outer ring barely moves and the core
-// components fly apart the most, like an exploded-view diagram.
+// this component drifts at explode(1), so the outer ring barely moves and the core components fly
+// apart the most, like an exploded-view diagram.
 export const COMPONENTS = [
   { id: 'outerSeal', layers: ['outerRing', 'ring', 'outerRune'], explodeOut: 0.25, explodeZ: 0.15 },
   { id: 'tickRing', layers: ['tickRing'], explodeOut: 0.45, explodeZ: 0.35 },
@@ -146,12 +147,87 @@ export const COMPONENTS = [
 // Outer-to-inner cast order (index drives the reveal stagger).
 export const CAST_ORDER = COMPONENTS.map((c) => c.id);
 
+// Sigil B (the second hand's sigil) differs only in seed, ramp and spin direction — everything
+// else (layer composition, component membership, bloom) is shared.
+CFG.sigilB = {
+  seedOffset: 7919,
+  spinFlip: -1,
+  color: {
+    core: [1.0, 0.92, 0.85],
+    mid: [1.0, 0.45, 0.62],
+    outer: [0.75, 0.12, 0.35],
+  },
+};
+
+CFG.audio = {
+  muted: false,
+  masterGain: 0.6,
+  limiterThresholdDb: -6,
+  maxPolyphony: 12,
+  humBaseHz: [55, 58.5],     // two detuned oscillators
+  humNoiseGain: 0.018,
+};
+
+// What "hand gone" looks like: the fast uncast sweep by default. Shatter/dissolve stay available
+// as renderer effects (and via ?dismiss=) but no gesture triggers them directly any more.
+CFG.dismiss = {
+  style: 'uncast',           // 'uncast' | 'dissolve' | 'shatter'
+  shatter: { durationS: 0.9, cellsAngular: 10, cellsRadial: 3, reassembleS: 0.7 },
+  dissolve: { durationS: 1.1, noiseScale: 6.0 },
+};
+
+// ---------------------------------------------------------------------------------------------
+// Phase 4: quality tiers, calibration, and the performance governor's own thresholds. The tier
+// table is the single source both the governor (auto) and ?quality= (manual override) read —
+// nothing outside QUALITY_TIERS hardcodes a per-tier number.
+export const QUALITY_TIERS = {
+  high: { dprClamp: 1.5, bloomScale: 1.0, bloomMips: 5, sparkCount: 140, shatterCellsAngular: 10, shatterCellsRadial: 3, sigilBLayerFrac: 1.0, reflection: true },
+  mid: { dprClamp: 1.15, bloomScale: 0.75, bloomMips: 4, sparkCount: 80, shatterCellsAngular: 8, shatterCellsRadial: 2, sigilBLayerFrac: 0.85, reflection: true },
+  low: { dprClamp: 0.9, bloomScale: 0.5, bloomMips: 3, sparkCount: 36, shatterCellsAngular: 6, shatterCellsRadial: 2, sigilBLayerFrac: 0.6, reflection: false },
+};
+
+CFG.perf = {
+  windowFrames: 90,           // rolling frame-time window the governor judges against
+  stepDownFps: 50, stepDownHoldS: 2.0,     // sustained miss -> drop a tier
+  stepUpFps: 56, stepUpHoldS: 8.0,         // sustained comfort -> allowed back up (hysteresis: needs to clear the down threshold by a margin AND hold much longer)
+};
+
+// Sane defaults the app starts with; src/calib/ silently adapts them from a rolling window of what
+// the user's hands actually do (and persists that), so openness -> size spans the full range for
+// this particular hand and camera without any setup step.
+CFG.calib = {
+  openness: { fist: 0.05, open: 0.95 },
+  scaleRef: 0.14,              // wrist -> middle-knuckle distance, aspect-corrected image units
+  adapt: {
+    windowS: 30, binS: 0.1,    // rolling min/max over this long, in bins this wide
+    warmupS: 3,                // need this much hand time in the window before adapting at all
+    tau: 2.0,                  // adapted bounds chase the window's min/max with this time constant
+    margin: 0.03,
+    fistMax: 0.35, openMin: 0.55,    // hard limits, so a window with no fist (or no open hand) can't collapse the range
+    saveEveryS: 5,
+  },
+};
+
+CFG.tracker = {
+  width: 640, height: 480, fps: 30,
+  dormantIdleS: 5.0,           // no hand seen this long -> drop detection rate
+  dormantProbeHz: 15,          // ...down to this probe rate (worst case ~67ms extra before a new hand casts)
+};
+
+CFG.hint = { afterS: 1.2 };    // camera running, no hand this long -> "Show your hand to the camera"
+
 // URL-flag overrides, applied last so tests can dial things in deterministically.
 if (qs.get('dpr')) CFG.dpr.clamp = parseFloat(qs.get('dpr'));
+if (qs.get('dismiss')) CFG.dismiss.style = qs.get('dismiss');
+if (qs.get('mute') === '1') CFG.audio.muted = true;
 export const FLAGS = {
   manual: qs.get('manual') === '1',     // deterministic clock: frames only advance via sigilApp.advance()
   autostart: qs.get('autostart') === '1',
   nocam: qs.get('nocam') === '1',
   dev: qs.get('dev') === '1',
   debug: qs.get('debug') === '1',
+  perf: qs.get('perf') === '1',
+  record: qs.get('record') === '1',
+  quality: qs.get('quality'),           // 'high' | 'mid' | 'low' | null — a value here disables the governor
+  recalibrate: qs.get('recalibrate') === '1',
 };

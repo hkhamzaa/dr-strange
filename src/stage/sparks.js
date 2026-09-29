@@ -36,6 +36,8 @@ void main() {
 `;
 
 export function makeSparks(THREE) {
+  // Always allocate the full (high-tier) count once; the quality governor scales visible count via
+  // setDrawRange() — no reallocation, no per-tier-change garbage.
   const n = CFG.sparks.count;
   const rng = makeRng(CFG.seed + 4242);
   const pos = new Float32Array(n * 3), phase = new Float32Array(n), scale = new Float32Array(n);
@@ -51,6 +53,7 @@ export function makeSparks(THREE) {
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   geo.setAttribute('aPhase', new THREE.BufferAttribute(phase, 1));
   geo.setAttribute('aScale', new THREE.BufferAttribute(scale, 1));
+  geo.setDrawRange(0, n);
   const mat = new THREE.ShaderMaterial({
     vertexShader: VERT, fragmentShader: FRAG,
     uniforms: { uTime: { value: 0 }, uSpeed: { value: CFG.sparks.riseSpeed * 40 }, uSpread: { value: 1.4 }, uColor: { value: CFG.color.mid } },
@@ -58,5 +61,10 @@ export function makeSparks(THREE) {
   });
   const points = new THREE.Points(geo, mat);
   points.frustumCulled = false;
-  return { points, update: (t) => { mat.uniforms.uTime.value = t; } };
+  return {
+    points,
+    update: (t) => { mat.uniforms.uTime.value = t; },
+    setCount: (count) => geo.setDrawRange(0, Math.min(n, Math.max(0, Math.round(count)))),
+    dispose: () => { geo.dispose(); mat.dispose(); },
+  };
 }

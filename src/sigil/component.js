@@ -3,7 +3,7 @@
 // and the size presets read as motion rather than a jump cut.
 import { CFG } from '../config.js';
 
-const EASE_TAU = 0.35;
+const EASE_TAU = 0.2;      // explode/regroup lands ~95% of the way in 0.6s
 
 export const ease = (cur, target, dt, tau = EASE_TAU) => cur + (target - cur) * (1 - Math.exp(-dt / tau));
 
@@ -27,7 +27,7 @@ export class SigilPart {
   setScale(s) { this.scaleTarget = s; }
   setTilt(rad) { this.tiltTarget = rad; }
   setLeanY(rad) { this.leanYTarget = rad; }
-  setPosition(x, y, z) { this.posTarget = [x, y, z]; }
+  setPosition(x, y, z) { this.posTarget[0] = x; this.posTarget[1] = y; this.posTarget[2] = z; }
   setIntensity(v) { this.intensityTarget = v; }
   setReveal(v) { for (const l of this.layers) l.setReveal(v); }
   flash(amount = CFG.gestures.pulse.amount) { this.flashAmt = Math.max(this.flashAmt, amount); }
@@ -48,7 +48,8 @@ export class SigilPart {
     this.group.position.set(this.pos[0], this.pos[1], this.pos[2]);
 
     const shownIntensity = this.intensity * (1 + this.flashAmt);
-    for (const l of this.layers) {
+    for (let i = 0; i < this.layers.length; i++) {      // indexed: a for-of here allocates an iterator every frame
+      const l = this.layers[i];
       l.spin(dt, this.spinMul);
       l.setTime(time);
       l.setIntensity(shownIntensity);
@@ -64,4 +65,6 @@ export class Component extends SigilPart {
     this.explodeZ = explodeCfg.explodeZ;
     this.reveal = 0;
   }
+
+  dispose() { for (const l of this.layers) l.dispose(); }
 }

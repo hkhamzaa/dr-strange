@@ -42,52 +42,46 @@ export class Hud {
     this.intents.length = Math.min(this.intents.length, CFG.hud.intentLogLen);
   }
 
-  update({ ctl, fps, detectMs, camDelegate, sigilStatus, anchorMode, bgMode, gesture }) {
+  update({ ctl, fps, detectMs, camDelegate, sigilStatus, anchorMode, bgMode, sessions, calib, audioMuted }) {
     const g = this.ctx, dpr = this.dpr;
     g.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    if (ctl.landmarks) {
-      const P = ctl.landmarks.map(([x, y]) => [x * innerWidth * dpr, y * innerHeight * dpr]);
-      g.strokeStyle = '#ffb238'; g.lineWidth = 2 * dpr; g.globalAlpha = 0.85;
-      g.beginPath();
-      for (const [a, b] of HAND_EDGES) { g.moveTo(P[a][0], P[a][1]); g.lineTo(P[b][0], P[b][1]); }
-      g.stroke();
-      g.fillStyle = '#fff'; g.globalAlpha = 0.9;
-      for (const p of P) { g.beginPath(); g.arc(p[0], p[1], 2.6 * dpr, 0, Math.PI * 2); g.fill(); }
-      g.globalAlpha = 1;
-    }
+    if (ctl.landmarks) this._drawHand(g, ctl.landmarks, dpr, '#ffb238');
+    if (ctl.second) this._drawHand(g, ctl.second, dpr, '#8fd6ff');
 
     const compLines = Object.entries(sigilStatus.components)
-      .map(([id, s]) => `  ${id.padEnd(10)} reveal ${s.reveal.toFixed(2)}  intensity ${s.intensity.toFixed(2)}  scale ${s.scale.toFixed(2)}${s.soloed ? '  [solo]' : ''}`)
+      .map(([id, s]) => `  ${id.padEnd(10)} reveal ${s.reveal.toFixed(2)}  intensity ${s.intensity.toFixed(2)}  scale ${s.scale.toFixed(2)}`)
       .join('\n');
     const intentLines = this.intents.map((e) => `  ${e.name}${e.brief ? ' ' + e.brief : ''}`).join('\n') || '  (none yet)';
 
-    const chip = gesture ? `${gesture.state}  gesture: ${gesture.label}${bar(gesture.progress)}` : '-';
-    const gateLines = gesture
-      ? Object.entries(gesture.gates).map(([k, v]) => `  ${k.padEnd(10)} ${v}`).join('\n')
+    const handLines = ctl.tracks.map((tr, i) => tr.present
+      ? `  hand ${i ? 'B' : 'A'}: raw ${tr.rawPose.padEnd(5)} stable ${tr.pose.padEnd(5)} openness ${tr.rawOpenness.toFixed(3)} -> ${tr.openness.toFixed(3)}  split ${tr.three ? 'on' : tr.threeArming ? 'arming' : 'off'}`
+      : `  hand ${i ? 'B' : 'A'}: (not in view)`).join('\n');
+    const sessLines = (sessions || []).map((s) => `  sigil ${s.id}: ${s.state.padEnd(10)} ${s.gesture.label.padEnd(12)} size ${s.gesture.gates.size}  exploded ${s.sigil.exploded}`).join('\n');
+    const calibLine = calib
+      ? `  fist ${calib.fist}  open ${calib.open}  scaleRef ${calib.scaleRef}  (window ${calib.windowS}s, min ${calib.winMin} max ${calib.winMax})`
       : '  -';
-    const raw = gesture?.raw;
-    const rawLine = raw
-      ? `  openness ${raw.openness}  pinchRatio ${raw.pinchRatio}  handScale ${raw.handScale}  snapRatio ${raw.snapRatio}`
-      : '  (no hand)';
 
     this.panel.textContent =
-      `${chip}\n` +
-      `pose: ${ctl.pose}  raw: ${ctl.rawPose}  pinch: ${ctl.pinch}\n` +
-      `fps: ${fps.toFixed(0)}  detect: ${detectMs.toFixed(1)}ms  delegate: ${camDelegate || '-'}\n` +
-      `anchor: ${anchorMode}  bg: ${bgMode}  exploded: ${sigilStatus.exploded}  solo: ${sigilStatus.solo || '-'}\n` +
-      `calibration:\n${rawLine}\n` +
-      `gesture states:\n${gateLines}\n` +
+      `fps: ${fps.toFixed(0)}  detect: ${detectMs.toFixed(1)}ms  delegate: ${camDelegate || '-'}${audioMuted ? '  [MUTED]' : ''}\n` +
+      `anchor: ${anchorMode}  bg: ${bgMode}\n` +
+      `hands:\n${handLines}\n` +
+      `sigils:\n${sessLines}\n` +
+      `calibration (auto):\n${calibLine}\n` +
       `intents:\n${intentLines}\n` +
-      `components:\n${compLines}`;
+      `components (A):\n${compLines}`;
+  }
+
+  _drawHand(g, landmarks, dpr, color) {
+    const P = landmarks.map(([x, y]) => [x * innerWidth * dpr, y * innerHeight * dpr]);
+    g.strokeStyle = color; g.lineWidth = 2 * dpr; g.globalAlpha = 0.85;
+    g.beginPath();
+    for (const [a, b] of HAND_EDGES) { g.moveTo(P[a][0], P[a][1]); g.lineTo(P[b][0], P[b][1]); }
+    g.stroke();
+    g.fillStyle = '#fff'; g.globalAlpha = 0.9;
+    for (const p of P) { g.beginPath(); g.arc(p[0], p[1], 2.6 * dpr, 0, Math.PI * 2); g.fill(); }
+    g.globalAlpha = 1;
   }
 }
-
-function bar(progress, width = 10) {
-  if (!progress) return '';
-  const filled = Math.round(clamp01(progress) * width);
-  return `  [${'#'.repeat(filled)}${'.'.repeat(width - filled)}]`;
-}
-const clamp01 = (x) => Math.min(1, Math.max(0, x));
 
 function brief(payload) {
   if (payload == null) return '';

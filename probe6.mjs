@@ -1,0 +1,11 @@
+import { chromium } from '@playwright/test';
+const b = await chromium.launch({ args: ['--use-angle=d3d11', '--enable-gpu', '--ignore-gpu-blocklist', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] });
+const ctx = await b.newContext({ permissions: ['camera'], serviceWorkers: process.env.NOSW ? 'block' : 'allow' });
+const p = await ctx.newPage();
+p.on('console', (m) => console.log('[page]', m.type(), m.text().slice(0, 300)));
+p.on('worker', (w) => { console.log('[worker created]', w.url()); w.on('close', () => console.log('[worker closed]')); });
+await p.goto('http://localhost:' + (process.env.PORT || 5173) + '/?autostart=1');
+await p.waitForFunction(() => window.sigilApp?.status().camera?.running, null, { timeout: 40000 });
+await p.waitForTimeout(3000);
+console.log(await p.evaluate(() => { const c = window.sigilApp.app.cam, v = c.video; return JSON.stringify({ paused: v.paused, ct: v.currentTime, q: v.getVideoPlaybackQuality().totalVideoFrames, track: c.stream.getVideoTracks()[0].readyState, muted: v.muted, vis: document.visibilityState, mode: c.mode, busy: c._busy, worker: !!c.worker, frames: c.frames, lastMediaTime: c.lastMediaTime, newFrame: c.newFrame, ready: c.video.readyState, sw: !!navigator.serviceWorker.controller }); }));
+await b.close();

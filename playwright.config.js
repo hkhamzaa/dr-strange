@@ -16,7 +16,8 @@ export default defineConfig({
     deviceScaleFactor: 1,
     permissions: ['camera'],
     launchOptions: {
-      args: [...gpuArgs, '--enable-gpu', '--ignore-gpu-blocklist', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'],
+      args: [...gpuArgs, '--enable-gpu', '--ignore-gpu-blocklist', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream',
+        '--js-flags=--expose-gc', '--enable-precise-memory-info'],   // exact heap numbers for the zero-allocation test
     },
     trace: 'retain-on-failure',
   },

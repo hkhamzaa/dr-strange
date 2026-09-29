@@ -1,148 +1,225 @@
 # SIGIL
 
-A glowing orange-gold magic circle, controlled only by webcam hand gestures. No keyboard, no mouse
-— the only pointer interaction in the whole app is the one "Enable camera" button a browser
-requires for permission.
+A glowing orange-gold magic circle that appears on your palm, driven only by your hands in front of
+the webcam. No keyboard, no mouse, no setup step — the only pointer interaction is the one
+"Enable camera" button a browser requires for permission.
 
-This is **Phase 2 of 4**: the gesture engine. Phase 1 built the procedural sigil, the intent bus,
-the stage and the component system, with one hardcoded rule (follow the palm). Phase 2 adds a real
-`DORMANT → CASTING → ACTIVE → DISMISSING` state machine and a gesture mapper that turns hand
-tracking into intents — summon, dismiss, resize, explode, solo, spin, tilt, pulse. The mapper never
-touches a Sigil method directly; every visual reaction is still a bus listener, same as Phase 1.
+The visuals are an entirely original, procedurally generated seal (SDF line art + a baked
+rune-glyph atlas). Hand-tracking plumbing started from
+[WonderSnap](https://github.com/AkbarSheikh-debug/wondersnap)'s stack; its particle models,
+catalog, quiz, voice and recorder are gone.
 
-Built on top of [WonderSnap](https://github.com/AkbarSheikh-debug/wondersnap)'s hand-tracking
-stack (MediaPipe wrapper, gesture classifier, controller pattern, synthetic-hand test fixtures) —
-its particle-model system, catalog, quiz, voice and recorder are gone; the visuals here are an
-entirely original, procedurally generated seal (SDF line art + a baked rune-glyph atlas), not a
-reproduction of any film or franchise artwork.
-
-## Run it
+## Quick start
 
 ```
 npm install
 npm start
 ```
 
-Open `http://localhost:5173`, click **Enable camera**, then **snap your fingers** (or hold an open
-palm still for half a second) to summon the sigil.
+Open `http://localhost:5173` (camera access needs a secure context — `localhost` counts, a plain
+`http://` IP address does not), click **Enable camera**, and hold up a hand. The sigil casts in on
+your palm the moment it's in view. There is no calibration screen: the app starts with sane
+defaults and silently adapts to your hand while you play (see **Calibration**).
 
 ## Gestures
 
-| gesture | while | does | intent |
-|---|---|---|---|
-| Snap | DORMANT / ACTIVE | summons / dismisses | `summon` / `dismiss` |
-| Open palm held 0.5s | DORMANT only | summons — a fallback for when a snap is missed | `summon` |
-| Hand visible, any pose | ACTIVE | the sigil follows your palm and twists with your hand's roll | `move` / `tilt`-ish (Phase 1's follow rule) |
-| Openness (continuous) | ACTIVE, not pinching | resizes between `smol` and `full` | `resize` |
-| Pinch + move hand toward/away | ACTIVE | pulls the sigil apart; releasing eases back together over ~0.6s | `explode` |
-| Peace sign | ACTIVE | cycles `solo()` through outerSeal → tickRing → starCore → innerSeal → heart → regroup, one step per gesture, 0.7s cooldown | `solo` / `regroup` |
-| Point (index only), twist | ACTIVE | sets the whole sigil's spin speed — clockwise faster, counter-clockwise slower; eases back to 1× over 1.5s once you let go | `spin` |
-| Palm offset from frame centre | ACTIVE | the sigil leans toward your hand | `tilt` |
+Presence and pose only — every hand drives its own sigil through the same map.
 
-Every recognized gesture also fires a `pulse` — a short brightness surge on the component it
-affected (or the whole sigil, for snap/peace-regroup). The exact numbers (dwell times, cooldowns,
-release curves) live in one table, `GESTURE_MAP` in `src/config.js` — see **Tuning** below.
+| you do | the sigil does | intent |
+|---|---|---|
+| Show a hand | casts in immediately with the draw-in sweep, centred on your palm, and follows it | `summon` |
+| Take all hands away | holds through a 0.5 s grace period (tracking dropouts), then uncasts with a fast 0.4 s fade. No hand, no sigil | `dismiss` |
+| Open your hand | grows to full size | `resize` |
+| Close to a fist | shrinks to its smallest (`smol`) size | `resize` |
+| Anything in between | size follows openness continuously — half-open hand, half-size sigil | `resize` |
+| Rotate your hand (roll) | rotates with it one to one, smoothed; the layers keep their own counter-spin on top | (follow rule) |
+| Three-finger pose — thumb, index and middle out, ring and pinky curled | splits apart into its components. Hold to keep it split; release and it regroups over ~0.6 s | `explode` |
+| Two hands | two sigils, one per hand, each driven by its own hand through everything above | — |
+| One of two hands leaves | only that hand's sigil uncasts; the other stays put on its own hand | `dismiss` |
 
-**Deliberate deviation from the brief:** the continuous openness→resize mapping is suspended while
-pinching. Without that, a pinched hand's ambiguous openness would fight the pinch→explode gesture
-for the same continuous channel. Resize resumes live tracking the instant the pinch releases.
+**Priority, per hand:** the three-finger pose beats size changes. Size is frozen from the moment
+the pose starts arming until it's released, at the largest size seen in the 0.3 s before — curling
+the ring and pinky away naturally lowers openness, and "split the enlarged sigil" shouldn't shrink
+it first.
 
-## Robustness
+**Robustness.** OPEN counts any 4 of 5 digits extended (the thumb is optional). Every pose test is a
+ratio of distances computed on aspect-corrected landmarks, so it works at any hand rotation and any
+distance from the camera. The split pose has its own classifier with threshold hysteresis (looser
+once active) plus a 0.15 s arm / 0.12 s release dwell, so a jittery hand can't flicker it into
+peace, point or open.
 
-- **Hysteresis.** Every continuous gesture (explode, spin, solo-cycle) is gated by a `DwellGate`:
-  the raw signal (pinch, point pose, peace pose) must hold for an *arm* window before the gesture
-  is trusted, and drop for a *release* window before it lets go. A single noisy frame can't flip
-  either direction. While released-but-not-yet-let-go, the gesture's live value freezes rather than
-  chasing whatever the hand shape becomes next — see the "one real bug" note below.
-- **Hand-lost policy.** No hand for 0.4s: continuous gestures freeze at their last value (the
-  mapper simply stops touching their targets). No hand for 6s while ACTIVE: spin and tilt ease back
-  to rest — the sigil doesn't dismiss itself, it just calms down.
-- **Primary hand only.** A second hand is tracked (Controller already does primary/secondary
-  selection) but the mapper ignores it this phase. Phase 3 uses it.
-- **Session hygiene.** The instant ACTIVE gives way to DISMISSING, the mapper neutralizes itself —
-  regroup, spin back to 1×, tilt back to 0 — so the next summon doesn't inherit a half-exploded,
-  spun-up sigil from the session that just ended.
+Thresholds live in `GESTURE_MAP` in `src/config.js`.
+
+## Smoothness
+
+- **Detection never shares the render thread.** MediaPipe runs in a Web Worker
+  (`src/input/detectWorker.js`), paced by the video's own frame callback. One frame is in flight at
+  a time; a camera frame that arrives while the worker is busy is dropped, never queued. The render
+  loop runs at display refresh and only reads the latest targets. (Browsers that can't run the
+  worker fall back to main-thread detection, scheduled as its own task between frames.)
+- **One-Euro filtering** on landmarks, palm position, roll, openness and hand scale, each with
+  parameters tuned to its own units (`CFG.filter`): heavy smoothing when the hand is still, almost
+  no lag when it moves fast.
+- **Every visual value chases its target** with frame-rate-independent exponential smoothing
+  (`x += (target − x)·(1 − e^(−dt/τ))`) — position, scale, rotation, explode. No snapping, no
+  stepping between 30 Hz detections. A sigil casting in on a newly seen hand appears directly on
+  the palm (at that hand's size and roll) rather than sliding over from wherever it last was; a
+  hand returning mid-fade reverses the sweep from where it got to.
+- **Camera:** 640×480 @ 30 fps requested, GPU delegate with CPU fallback, at most two hands per
+  detection. MediaPipe's multi-second first-detection warm-up happens inside the worker before the
+  start screen closes, so the first real frame isn't a stall.
+- **No per-frame allocation in our frame loop** (`tests/perf.spec.js`): reused intent payloads and
+  snapshot objects, index loops instead of iterators, copy-on-write listener arrays on the bus, a
+  ring buffer in the quality governor, unboxed float uniforms. See **Performance notes**.
+- Both sigils are built and pre-rendered once at boot and hidden while dormant, so neither the
+  first hand nor a second hand ever pays for building or uploading a sigil mid-interaction.
+
+**Model note:** MediaPipe publishes the hand landmarker only as the single `hand_landmarker.task`
+bundle (float16); there is no separate "lite" `.task` bundle for the Tasks API, so that's what
+ships. The path is one constant in `src/input/tracker.js` if a lighter bundle becomes available.
+
+## Calibration
+
+None to do. `src/calib/calibrate.js` keeps a rolling 30 s window of the openness and hand scale
+your hands actually reach and eases the fist/open bounds (which normalize openness → size) toward
+that window's min/max, so a hand that never fully opens or closes still spans the full size range.
+Hard limits keep the range from collapsing if, say, you only ever show an open hand. The adapted
+profile persists in `localStorage` (`sigil.calib.v2`); `?recalibrate=1` resets it. With `?debug=1`
+the HUD shows the live raw pose, raw and normalized openness, and the adapted bounds per hand, and
+the console logs them once a second.
+
+**Why the old guided calibration stalled at "Hold your hand open, 0%":** MediaPipe normalizes
+landmark x by the frame's width and y by its height. On a 16:9 camera that squashes horizontal
+distances by ~44%, so an upright open hand's sideways thumb read as tucked, the strict "all four
+fingers *and* thumb out" OPEN rule failed, and the pose came back `other`. On top of that, the old
+flow reset its 2 s hold timer to zero on any single missed frame. Fixed at the root: poses are now
+classified on aspect-corrected landmarks, OPEN is 4-of-5 with the thumb optional, and there is no
+blocking flow left to stall (`tests/logic.spec.js` pins the regression).
+
+## Deploying
+
+```
+npm run build
+```
+
+produces a self-contained `dist/` folder: no bundler, just `src/**/*.js` and `styles.css` copied
+out with content-hashed filenames (cache-busted on every build) and their import specifiers — and
+the detection worker's `new URL(…, import.meta.url)` — rewritten to match, plus the vendored `three`
+build + postprocessing addons, the MediaPipe `tasks-vision` wasm runtime, and the hand-landmark
+model at the same relative paths the app already expects. `dist/` is a static site.
+
+- **Netlify** — publish directory `dist`, build command `npm run build`. `_headers` sets
+  long-cache-immutable on the hashed files, a shorter revalidating cache on vendored assets, and
+  no-cache on `index.html`/`sw.js`.
+- **Vercel** — `vercel.json` sets `buildCommand`/`outputDirectory` and the same header rules.
+- **GitHub Pages** — `.github/workflows/deploy.yml` builds and publishes `dist/` on every push to
+  `main`. Enable Pages under Settings → Pages → Source → "GitHub Actions" once. All references are
+  relative, so a project-page subpath works.
+
+All three give HTTPS automatically, which the camera requires off `localhost`.
 
 ## URL flags
 
 | flag | effect |
 |---|---|
-| `?debug=1` | Debug HUD: hand skeleton, gesture chip with a progress bar, calibration readout, per-gesture state, last 5 intents, per-component state |
-| `?dev=1` | Dev harness keys — see below. Drives the real Controller → GestureMapper path, not a shortcut. |
-| `?autostart=1` | Skip the start panel and request the camera immediately (still starts DORMANT — you still gesture to summon) |
-| `?nocam=1` | Boot straight into a fully-cast, ACTIVE sigil with no camera and no gesture engine at all — for visual tuning |
-| `?anchor=hand\|stage` | Anchor mode (default `hand`): follow the palm, or stay centered |
-| `?bg=void\|ar` | Background mode (default `void`): near-black vignette, or the dimmed webcam feed |
-| `?manual=1` | Deterministic clock for tests — frames only advance via `window.sigilApp.advance()` |
-| `?dpr=<n>` | Override the device-pixel-ratio clamp (default 1.5) |
+| `?debug=1` | Debug HUD: hand skeletons, per-hand raw/stable pose, raw → normalized openness, split gate, both sigils' state, adapted calibration bounds, last intents; plus a once-a-second console log |
+| `?dev=1` | Dev harness keys (below) — synthetic hands through the real Controller → mapper path |
+| `?perf=1` | Render fps, detection fps and capture-to-landmarks latency, plus frame time avg/p95, GPU time, draw calls, triangles, heap, quality tier |
+| `?record=1` | (with `?debug=1`) a record button capturing canvas + audio to WebM |
+| `?quality=high\|mid\|low` | Pin a quality tier (disables the governor) |
+| `?recalibrate=1` | Reset the adapted calibration profile |
+| `?autostart=1` | Skip the start panel and request the camera immediately |
+| `?nocam=1` | No camera: a fully cast idle sigil for visual tuning (the no-hand rule is off) |
+| `?anchor=hand\|stage` | Follow the palm (default) or stay centred |
+| `?bg=void\|ar` | Dark vignette (default) or the dimmed webcam feed, cover-cropped so the sigil sits on your palm as you see it |
+| `?dismiss=uncast\|dissolve\|shatter` | What "hand gone" looks like (default the fast uncast) |
+| `?dpr=<n>`, `?mute=1` | Device-pixel-ratio clamp; start muted |
+| `?manual=1` | Deterministic clock for tests — frames only advance via `window.sigilApp.advance()`; the real camera is never started |
 
-### Dev harness (`?dev=1` only)
+A plain load with no query string reaches none of these.
 
-Keys drive a synthetic hand through the exact same `Controller.onHands()` → `GestureMapper` path a
-real camera frame takes — no Sigil method is called directly, so this exercises the real state
-machine and thresholds with no camera in the room.
+### Dev harness (`?dev=1`)
 
-| key | hand pose | notes |
-|---|---|---|
-| `S` | a scripted snap (press → release) | momentary, fires once per keypress |
-| hold `O` | open palm | DORMANT: fallback hold-summon. ACTIVE: resize toward `full` |
-| hold `F` | fist | ACTIVE: resize toward `smol` |
-| hold `P` | pinch | ACTIVE: explode. **Down arrow** shrinks the simulated hand (explode out), **Up arrow** grows it back |
-| hold `I` | point | ACTIVE: spin control. **Left/Right arrow** twists the simulated roll |
-| hold `V` | peace | cycles solo |
-| arrow keys (no pose held) | — | nudges the simulated palm position — drives tilt, or follow in `hand` anchor mode |
+| key | does |
+|---|---|
+| `1` / `2` | toggle hand A / hand B in and out of view |
+| arrows | move hand A |
+| `A` / `D` | roll hand A |
+| `[` / `]` | close / open hand A continuously |
+| hold `F` / hold `T` | hand A fist / three-finger pose |
+| `J` / `L`, `-` / `=` | roll / close-open hand B |
+| hold `V` / hold `G` | hand B fist / three-finger pose |
+| `M` | mute |
 
-## Tuning
+## Quality tiers
 
-Every threshold is in `GESTURE_MAP` and `CFG.gestures` in `src/config.js` — nothing is hardcoded in
-`mapper.js` itself. With `?debug=1`, the HUD's **calibration** block shows live raw values
-(openness, pinch ratio, hand scale, snap ratio) and each gesture's current state (`idle` /
-`arming` / `active` / `releasing` / `cooldown` / `suspended`) so you can watch a threshold land in
-real time while you move your hand, instead of guessing from source.
+| tier | DPR clamp | bloom scale/mips | sparks | shatter cells | sigil-B layers | floor reflection |
+|---|---|---|---|---|---|---|
+| high | 1.5 | 1.0× / 5 | 140 | 10×3 | 100% | on |
+| mid | 1.15 | 0.75× / 4 | 80 | 8×2 | 85% | on |
+| low | 0.9 | 0.5× / 3 | 36 | 6×2 | 60% | off |
 
-If gestures feel twitchy: raise the relevant `armS`. If releasing feels sticky: lower `releaseS`.
-If explode is too sensitive to small hand-depth changes: raise `explode.scaleRange`. If spin winds
-up too fast: lower `spin.gain`.
+The governor drops a tier after 2 s below 50 fps and climbs back after 8 s at 56+. Desktop starts
+at `high`, touch devices at `mid`. Measured on this project's dev machine (headless Chromium, real
+GPU via ANGLE/D3D11) with the camera running and detection in the worker: rendering holds a flat
+60 fps at `high`. That machine's GPU class wasn't verified as integrated, so treat "60 fps on an
+integrated GPU" as the governor's job to guarantee rather than a measured claim — `?perf=1` shows
+exactly where a given machine lands.
+
+## Performance notes
+
+`tests/perf.spec.js` checks three things: a 600-frame two-hand run leaves the retained heap flat
+(< 256 KB after a full GC); our own frame loop allocates no objects, closures or iterators per
+frame; and 50 rounds of hands appearing and leaving don't grow GPU resource counts. Two residual
+sources of short-lived garbage are outside this project's control: three.js's renderer internals
+(~6 KB/frame, mostly uniform uploads and render-list sorting) and V8 boxing doubles into 12-byte
+heap numbers when passing them to calls it didn't inline (~0.6 KB/frame across both sigils). Both
+die young and are collected by the cheap nursery GC.
+
+## Troubleshooting
+
+- **Nothing happens when I show my hand** — the "Show your hand to the camera" hint means no hand
+  is being detected: check lighting, keep the whole hand in frame, and try `?debug=1` to see what
+  the tracker reports.
+- **"This browser cannot access a camera"** — use `localhost` or HTTPS.
+- **Camera denied / not found / lost** — an idle sigil shows and a **Retry camera** button appears.
+- **WebGL2 unsupported** — the start panel says so; use a recent Chrome, Edge, Firefox or Safari.
+- **Low frame rate** — `?perf=1` shows render/detection fps; `?quality=low` isolates GPU cost.
+- **No sound** — audio unlocks on the "Enable camera" click; check `?mute=1` isn't set.
+- **Size range feels off** — give it a few seconds of opening and closing (it adapts), or reset
+  with `?recalibrate=1`.
 
 ## Architecture
 
 ```
 src/
-  input/      tracker.js (MediaPipe wrapper), gestures.js, controller.js, synth.js — hand -> pose/palm/roll
-              stateMachine.js — DORMANT/CASTING/ACTIVE/DISMISSING, emits summon/dismiss
-              mapper.js — Controller output -> intents; owns all gesture thresholds via config
-  bus/        bus.js — the only channel visual code listens on; intent names declared up front
-  sigil/      shaders.js (SDF stroke/ring/star/tick/rune-band GLSL), glyphs.js (rune atlas),
-              layer.js (one quad + material), component.js (grouped layers + animated transform,
-              plus the decaying `flash` a pulse triggers), sigil.js (the public Sigil API)
-  stage/      scene.js, bloom.js, floor.js, sparks.js, background.js
-  hud/        hud.js — debug overlay, only ever built with ?debug=1
-  config.js   every tunable: colors, layer composition, component membership, bloom, anchor,
-              presets, and GESTURE_MAP (Phase 2's gesture -> intent -> params table)
-  app.js      boot, main loop, dev harness, window.sigilApp test API
+  input/   tracker.js       camera + frame pacing; posts frames to the worker, drops stale ones
+           detectWorker.js  MediaPipe HandLandmarker in a Web Worker
+           controller.js    two identity-stable hand slots (nearest-wrist matching), One-Euro
+                            filtering, aspect-corrected classification, the split-pose gate
+           gestures.js      pose classifier (OPEN 4-of-5, FIST, THREE, …), openness
+           oneEuro.js       the adaptive low-pass
+           stateMachine.js  DORMANT → CASTING → ACTIVE → DISMISSING, driven by presence
+           mapper.js        one hand → one sigil's intents (presence, size, split)
+           synth.js         synthetic hands for tests and the dev harness
+  bus/     bus.js           the only channel visuals listen on; withTag() routes a mapper's intents to its sigil
+  calib/   calibrate.js     silent rolling-window adaptation + persistence
+  sigil/   shaders.js, glyphs.js, layer.js, component.js, sigil.js (the public Sigil API)
+  stage/   scene.js, bloom.js, floor.js, sparks.js, background.js
+  audio/   engine.js        synthesized WebAudio (no sample files)
+  perf/    governor.js, overlay.js
+  hud/     hud.js           ?debug=1 only
+  record/  record.js        ?record=1 only
+  app.js   boot, render loop, one SigilSession per hand slot, palm → world mapping, dev harness
 ```
 
-**Data flow.** `tracker.js` polls the camera once per new video frame and hands 21-point landmarks
-(mirrored) to `Controller`, which classifies pose, tracks primary/secondary hand selection, palm
-centre and smoothed roll. Every frame, `app.js` turns that into a `handState` intent, and
-`GestureMapper.update()` reads the Controller directly (it's allowed to — it's the one place raw
-hand data becomes meaning) to drive the state machine and emit every other intent. Nothing past
-that point — not the sigil, not the stage, not the HUD's calibration panel via its own data path —
-ever reads a landmark itself; visuals only ever hear intents, exactly like Phase 1's follow rule.
-
-**The sigil.** Thirteen layers (rings, star polygons `{9/4}` `{7/2}` `{12/5}`, a rotated square
-pair, tick ring, two rune bands, a glow disc), each a flat additive-blended quad whose fragment
-shader computes a signed distance to hand-unrolled line segments (or, for rings and ticks, a
-closed-form annulus/angular-repeat distance) and shades it with a soft glow and the orange-to-gold
-ramp. Rune bands sample one shared 8×8 glyph atlas (baked once on an offscreen canvas at startup,
-deterministic per `config.seed`) via a per-slot hash. Layers are grouped into five named
-`Component`s (`outerSeal`, `tickRing`, `starCore`, `innerSeal`, `heart`); every component and the
-`Sigil` root itself share the same setter contract (`setSpinMul`, `setScale`, `setTilt`, `setLeanY`,
-`setPosition`, `setIntensity`, `flash`/`pulse`) and animate toward their targets by exponential
-smoothing. `cast()` staggers each component's angular reveal sweep from outer to inner over ~1.2s;
-`uncast()` reverses it. Phase 2 additions are purely additive: `setSizeT(t)` (continuous size
-between the `smol`/`full` presets), `setLeanY` (the second tilt axis — "leans toward the hand"
-needs both), and `pulse(name?)` (a decaying brightness surge on one component or the whole sigil).
+**Data flow.** Camera frame → worker detection → `Controller.onHands()` updates each slot's
+filtered targets (detection rate). Render loop (display rate): each `SigilSession` runs its
+mapper inside `bus.withTag(id)` (presence → `summon`/`dismiss`, openness → `resize`, split pose →
+`explode`), applies the palm/roll follow rule, then the sigil eases toward its targets. Nothing past
+the mapper reads a landmark. The renderer methods for other effects (`solo`, `shatter`,
+`dissolve`, `reassemble`, `setSpinMul`, `setTilt`, …) remain available on the `Sigil` API and bus;
+no gesture triggers them in this build.
 
 ## Tests
 
@@ -150,28 +227,33 @@ needs both), and `pulse(name?)` (a decaying brightness surge on one component or
 npm test
 ```
 
-Playwright drives the real app in Chromium (real GPU, `--use-angle=d3d11` on Windows) with a fake
-webcam device — no physical camera needed.
+Playwright drives the real app in Chromium (real GPU) with deterministic synthetic hands:
 
-- `logic.spec.js`, `bus.spec.js`, `sigil.spec.js`, `boot.spec.js` — Phase 1, unchanged and still
-  green (`boot.spec.js`'s `?nocam=1` case now also asserts the state machine reads ACTIVE).
-- `gestures.spec.js` — Phase 2: snap driving the full state cycle, the open-palm-hold fallback
-  summon, openness→size convergence, pinch+hand-scale→explode with release→regroup, peace cycling
-  solo in order while respecting its cooldown (including that holding the pose past the cooldown
-  does *not* re-trigger without a release edge first), and a jitter test asserting a noisy 6-frame
-  pose burst produces zero premature flips before a clean run settles.
+- `gestures.spec.js` — hand appears → cast (on the palm); hand lost → uncast after the grace period
+  (a shorter dropout survives); openness drives size monotonically and a fist gives `smol`; roll
+  drives rotation one to one; three-finger pose → split, hold keeps it, release regroups; jittered
+  landmarks never flicker the split; `?nocam=1` idle display
+- `twoHand.spec.js` — two hands → two independent sigils (own palm, own size, own split); losing
+  either hand removes only its sigil; identity survives the tracker reporting hands in either order
+- `calib.spec.js` — no setup step; auto-adaptation spans the full size range for a half-range hand;
+  persistence and `?recalibrate=1`; scale invariance
+- `logic.spec.js` — pose classification at any rotation (including THREE and 4-of-5 OPEN), the
+  16:9 regression, controller palm/roll/slot tracking
+- `perf.spec.js` — retained heap, per-frame allocation, GPU resource stability
+- `e2e.spec.js` — the whole lifecycle in one run, no console errors, no GPU growth
+- `bus.spec.js`, `sigil.spec.js`, `boot.spec.js`, `audio.spec.js` — renderer, bus, boot, sound
 
-One real bug the tests (and a lot of manual tracing) caught during development: the hysteresis
-release window was re-deriving each continuous gesture's live value from whatever the hand became
-*next* — so releasing a point-pose spin twist by opening the hand briefly sent the spin multiplier
-plunging toward its clamped minimum before recovering. Fixed by freezing the value the instant the
-raw pose condition goes false, and only starting the release ramp once the hysteresis window fully
-elapses.
+CI (`.github/workflows/ci.yml`) runs the suite and a build on every push and pull request.
 
-## Out of scope (Phase 2)
+## Credits
 
-Two-hand control, multiple sigils, sound, shatter effects, external 3D model loading.
+- Hand tracking: [MediaPipe Tasks — HandLandmarker](https://developers.google.com/mediapipe)
+- Rendering: [Three.js](https://threejs.org)
+- Hand-tracking plumbing (camera wrapper, pose-classification approach, synthetic-hand test
+  fixtures, the Controller pattern) adapted from
+  [WonderSnap](https://github.com/AkbarSheikh-debug/wondersnap), used under its MIT license;
+  everything visual, audible and gesture-logical here is new.
 
-**Planned for Phase 3:** the second hand. Two-hand spread scales the sigil; the second hand grabs
-and moves a single component (most likely gated behind the second hand pinching, to disambiguate
-from the spread gesture).
+## License
+
+MIT

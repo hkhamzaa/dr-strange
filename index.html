@@ -6,6 +6,9 @@
   <title>SIGIL</title>
   <meta name="description" content="A glowing magic circle, controlled only by webcam hand gestures.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='24' fill='none' stroke='%23ffb238' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='6' fill='%23fff2c0'/%3E%3C/svg%3E">
+  <link rel="apple-touch-icon" href="icons/icon-192.svg">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#050301">
   <link rel="stylesheet" href="styles.css">
   <script type="importmap">
     {
@@ -19,17 +22,25 @@
 <body>
   <canvas id="stage" aria-label="The sigil"></canvas>
   <video id="cam" playsinline muted aria-hidden="true"></video>
+  <div id="hint" class="hint" role="status">Show your hand to the camera</div>
 
   <div id="start" class="start">
     <div class="start-card glass">
       <div class="mark" aria-hidden="true"></div>
       <h1>SIGIL</h1>
-      <p>A glowing magic circle, drawn and turned by your hand in front of the webcam. No keyboard, no mouse.</p>
+      <p>A glowing magic circle that appears on your palm. Open your hand to grow it, close it to shrink it, turn it to spin it. No keyboard, no mouse.</p>
       <button id="bEnableCam" class="primary">Enable camera</button>
       <p id="startMsg" class="start-msg"></p>
     </div>
   </div>
 
   <script type="module" src="src/app.js"></script>
+  <script>
+    // Offline shell only — registered from the page itself (not app.js) so it stays out of the
+    // main bundle's dependency graph and never blocks first paint on its own await.
+    if ('serviceWorker' in navigator) window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    });
+  </script>
 </body>
 </html>

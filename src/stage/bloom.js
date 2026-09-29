@@ -12,6 +12,17 @@ export function makeBloom(THREE, renderer, scene, camera) {
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
 
-  function resize() { composer.setSize(innerWidth, innerHeight); }
-  return { composer, bloom, resize };
+  let scale = 1;
+  function resize() {
+    composer.setSize(innerWidth, innerHeight);
+    bloom.setSize(Math.round(innerWidth * scale), Math.round(innerHeight * scale));
+  }
+  // The quality governor's lever: UnrealBloomPass's own internal mip chain renders at whatever
+  // resolution setSize() was last called with, independent of the composer's own (full-res) size
+  // — a cheaper blur at low tiers without touching the final image's resolution. The library's mip
+  // COUNT itself is fixed internally (not exposed for runtime reconfiguration), so "mip count" per
+  // tier is approximated by resolution scale alone; see README "Performance findings".
+  function setScale(s) { scale = s; resize(); }
+
+  return { composer, bloom, resize, setScale };
 }

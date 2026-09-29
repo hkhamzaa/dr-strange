@@ -1,0 +1,33 @@
+# Netlify header rules. Applied to whatever build.mjs copies into dist/ — this file itself only
+# takes effect once it's copied there too (see build.mjs's copyIfExists list).
+
+# The one unhashed entry point: must always revalidate so a new deploy's hashed asset links land.
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+/sw.js
+  Cache-Control: public, max-age=0, must-revalidate
+
+/manifest.json
+  Cache-Control: public, max-age=3600
+
+# Content-hashed on every build — safe to cache forever.
+/src/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/styles.*.css
+  Cache-Control: public, max-age=31536000, immutable
+
+# Vendored third-party code and the model file — versioned by the pinned npm/model version, not
+# hashed per-build, so a shorter revalidating cache instead of "immutable".
+/node_modules/*
+  Cache-Control: public, max-age=86400
+
+/models/*
+  Cache-Control: public, max-age=86400
+
+/node_modules/@mediapipe/tasks-vision/wasm/*.wasm
+  Content-Type: application/wasm
+
+/models/*.task
+  Content-Type: application/octet-stream

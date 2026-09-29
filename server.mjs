@@ -1,4 +1,4 @@
-// Zero-dependency static server for WonderSnap. The camera API needs a secure context: http://localhost is one.
+// Zero-dependency static server for SIGIL. The camera API needs a secure context: http://localhost is one.
 //   node server.mjs [port]      ->  http://localhost:5173
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
@@ -25,4 +25,4 @@ createServer(async (req, res) => {
   } catch {
     res.writeHead(404, { 'Content-Type': 'text/plain' }).end('not found');
   }
-}).listen(PORT, () => console.log(`WonderSnap running at http://localhost:${PORT}`));
+}).listen(PORT, () => console.log(`SIGIL running at http://localhost:${PORT}`));

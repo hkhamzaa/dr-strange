@@ -1,35 +1,97 @@
-// Webcam + MediaPipe HandLandmarker (Tasks API, VIDEO mode), lifted unchanged from WonderSnap's
-// src/hands.js — only the relative import paths moved to match this file living one folder deeper.
-// The render loop calls poll() once per frame; detection only runs when the camera delivered a new
-// frame, and timestamps strictly increase.
-const VISION = '../../node_modules/@mediapipe/tasks-vision/vision_bundle.mjs';
-const WASM = 'node_modules/@mediapipe/tasks-vision/wasm';
-const MODEL = 'models/hand_landmarker.task';
+// Webcam + MediaPipe HandLandmarker. Detection runs in a Web Worker (detectWorker.js), paced by the
+// video element's own frame callback — never by the render loop, and never on its thread. One
+// frame is in flight at a time: a camera frame that arrives while the worker is still busy is
+// dropped, not queued, so results are always about the newest frame the worker could take.
+// Browsers that can't run the worker fall back to detecting on the main thread (same pacing).
+import { CFG } from '../config.js';
+
+const VISION = new URL('../../node_modules/@mediapipe/tasks-vision/vision_bundle.mjs', import.meta.url).href;
+const WASM = new URL('node_modules/@mediapipe/tasks-vision/wasm', location.href).href;
+const MODEL = new URL('models/hand_landmarker.task', location.href).href;
+
+const pts = () => Array.from({ length: 21 }, () => [0, 0]);
 
 export class HandCamera {
   constructor(video) {
     this.video = video;
-    this.landmarker = null;
     this.stream = null;
     this.running = false;
+    this.paused = false;         // tab hidden
+    this.mode = null;            // 'worker' | 'main'
     this.delegate = null;
-    this.lastVideoTime = -1;
+    this.onHands = null;         // (hands, tSeconds) => void
+    this.onEnded = null;         // () => void — the camera track ended (unplugged, taken by another app)
+    this._stopped = false;
+    this.minInterval = 0;        // seconds; the app raises this to probe slowly while nobody's there
     this.lastTs = 0;
-    this.frames = 0;             // camera frames processed
-    this.fps = 0;
+    this.lastMediaTime = -1;
+    this.lastDetectT = -1e9;
+    this.frames = 0;             // detections completed
+    this.fps = 0;                // detections per second
     this.detectMs = 0;
+    this.latencyMs = 0;          // camera capture -> landmarks ready
     this._n = 0; this._t = performance.now();
-    this.newFrame = false;       // a new video frame arrived since the last poll (renderer uploads it)
+    this.newFrame = false;       // a new video frame arrived since the renderer last looked
+    this.worker = null; this.landmarker = null;
+    this._busy = false;
+    this._flat = new Float32Array(84);      // 2 hands x 21 x (x, y), ping-ponged with the worker
+    this._buf = [pts(), pts()];
+    this._out = [];
+    this._pending = false;
+    this._lastVfcAt = -1e9;
+    this._captureAt = 0;
   }
 
   async start(onStatus = () => {}) {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('This browser cannot access a camera (getUserMedia missing — use https or localhost).');
     onStatus('Requesting camera…');
-    this.stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user', frameRate: { ideal: 30 } }, audio: false });
+    const c = CFG.tracker;
+    this.stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: c.width }, height: { ideal: c.height }, frameRate: { ideal: c.fps, max: c.fps }, facingMode: 'user' },
+      audio: false,
+    });
+    // watched from the moment the camera opens: a camera unplugged (or grabbed by another app)
+    // during the tracker's multi-second load must surface, not leave a silently frozen feed
+    const track = this.stream.getVideoTracks()[0];
+    track?.addEventListener('ended', () => { if (!this._stopped) this.onEnded?.(); });
     this.video.srcObject = this.stream;
     this.video.muted = true; this.video.playsInline = true;
     await this.video.play();
     onStatus('Loading hand tracker…');
+    const ended = () => Object.assign(new Error('The camera stopped while the hand tracker was loading.'), { name: 'NotReadableError' });
+    try { await this._startWorker(); this.mode = 'worker'; }
+    catch (e) {
+      if (this._stopped) throw ended();
+      console.warn('worker detection unavailable, detecting on the main thread instead', e);
+      await this._startMain(); this.mode = 'main';
+    }
+    if (this._stopped || track?.readyState === 'ended') { this.stop(); throw ended(); }
+    this.running = true;
+    onStatus('');
+    this._schedule();
+  }
+
+  _startWorker() {
+    return new Promise((resolve, reject) => {
+      const w = new Worker(new URL('./detectWorker.js', import.meta.url), { type: 'module' });
+      this.worker = w;
+      const fail = (err) => { this._abortInit = null; w.terminate(); if (this.worker === w) this.worker = null; reject(err); };
+      this._abortInit = () => fail(new Error('stopped during init'));
+      w.onerror = (e) => { e.preventDefault?.(); fail(new Error(e.message || 'detection worker failed to load')); };
+      w.onmessage = ({ data }) => {
+        if (data.type === 'ready') {
+          this._abortInit = null;
+          this.delegate = data.delegate;
+          w.onmessage = ({ data: d }) => this._onWorker(d);
+          w.onerror = (e) => this._workerDied(e.message);
+          resolve();
+        } else if (data.type === 'error') fail(new Error(data.message));
+      };
+      w.postMessage({ type: 'init', vision: VISION, wasm: WASM, model: MODEL });
+    });
+  }
+
+  async _startMain() {
     const { FilesetResolver, HandLandmarker } = await import(VISION);
     const fileset = await FilesetResolver.forVisionTasks(WASM);
     const make = (delegate) => HandLandmarker.createFromOptions(fileset, {
@@ -39,32 +101,102 @@ export class HandCamera {
     });
     try { this.landmarker = await make('GPU'); this.delegate = 'GPU'; }
     catch (e) { console.warn('GPU delegate failed, falling back to CPU', e); this.landmarker = await make('CPU'); this.delegate = 'CPU'; }
-    this.running = true;
-    onStatus('');
+    this.landmarker.detectForVideo(this.video, this._nextTs());     // warm-up (GPU program compile) behind the loading message
   }
 
-  /** Returns undefined when there is no new camera frame, else a list of hands (mirrored, selfie view), possibly empty. */
-  poll() {
+  _schedule() {
+    if (!this.running || this._pending || !this.video.requestVideoFrameCallback) return;
+    this._pending = true;
+    this.video.requestVideoFrameCallback((now, meta) => { this._pending = false; this._lastVfcAt = now; this._onFrame(now, meta); });
+  }
+
+  /** Called by the render loop every frame; O(1) unless there's a new frame to hand off. The
+   *  video-frame callback only fires for frames the browser actually presents, and it may skip
+   *  presenting a hidden <video> — so if it's gone quiet (or doesn't exist), poll currentTime. */
+  pump(nowMs) {
+    if (!this.running || nowMs - (this._lastVfcAt || -1e9) < 250) return;
+    this._onFrame(nowMs, null);
+  }
+
+  _nextTs() { this.lastTs = Math.max(Math.round(performance.now()), this.lastTs + 1); return this.lastTs; }   // must strictly increase
+
+  _onFrame(now, meta) {
+    if (!this.running) return;
     const v = this.video;
-    if (!this.running || v.readyState < 2 || v.currentTime === this.lastVideoTime) return undefined;
-    this.lastVideoTime = v.currentTime;
-    this.newFrame = true;
-    const ts = Math.max(Math.round(performance.now()), this.lastTs + 1);      // must strictly increase
-    this.lastTs = ts;
+    const mediaTime = meta ? meta.mediaTime : v.currentTime;
+    if (mediaTime !== this.lastMediaTime) {
+      this.lastMediaTime = mediaTime;
+      this.newFrame = true;
+      if (!this.paused && !this._busy && v.readyState >= 2 && now / 1000 - this.lastDetectT >= this.minInterval) {
+        this.lastDetectT = now / 1000;
+        this._captureAt = meta?.captureTime || now;
+        if (this.mode === 'worker') this._sendToWorker(now / 1000);
+        else if (this.mode === 'main') { this._busy = true; setTimeout(() => { this._busy = false; if (this.running) this._detectHere(now / 1000); }, 0); }   // its own task, never inside a render frame
+      }
+    }
+    if (meta) this._schedule();
+  }
+
+  _sendToWorker(t) {
+    this._busy = true;
+    createImageBitmap(this.video).then((bitmap) => {
+      if (!this.running || !this.worker) { bitmap.close(); this._busy = false; return; }
+      this.worker.postMessage({ type: 'frame', bitmap, ts: this._nextTs(), buf: this._flat, t }, [bitmap, this._flat.buffer]);
+    }, () => { this._busy = false; });
+  }
+
+  _workerDied(why) {
+    console.error(`hand-detection worker stopped (${why || 'unknown error'}); continuing on the main thread`);
+    this.worker?.terminate(); this.worker = null;
+    this.mode = 'starting';
+    this._startMain().then(() => { this.mode = 'main'; this._busy = false; }, (e) => console.error('main-thread detection failed too', e));
+  }
+
+  _onWorker(d) {
+    if (d.type === 'fatal') { this._workerDied(d.message); return; }
+    if (d.type !== 'hands') return;
+    this._flat = d.buf;
+    this._busy = false;
+    this.detectMs = d.detectMs;
+    const out = this._out;
+    out.length = 0;
+    for (let h = 0; h < d.n; h++) {
+      const dst = this._buf[h], o = h * 42;
+      for (let i = 0; i < 21; i++) { dst[i][0] = 1 - d.buf[o + i * 2]; dst[i][1] = d.buf[o + i * 2 + 1]; }   // mirror x: selfie view
+      out.push(dst);
+    }
+    this._delivered(d.t);
+  }
+
+  _detectHere(t) {
     const t0 = performance.now();
-    const res = this.landmarker.detectForVideo(v, ts);
+    const found = this.landmarker.detectForVideo(this.video, this._nextTs()).landmarks || [];
     this.detectMs = performance.now() - t0;
-    this.frames++; this._n++;
+    const out = this._out;
+    out.length = 0;
+    for (let h = 0; h < found.length && h < 2; h++) {
+      const src = found[h], dst = this._buf[h];
+      for (let i = 0; i < 21; i++) { dst[i][0] = 1 - src[i].x; dst[i][1] = src[i].y; }
+      out.push(dst);
+    }
+    this._delivered(t);
+  }
+
+  _delivered(t) {
     const now = performance.now();
+    this.latencyMs = now - this._captureAt;
+    this.frames++; this._n++;
     if (now - this._t > 1000) { this.fps = (this._n * 1000) / (now - this._t); this._n = 0; this._t = now; }
-    return (res.landmarks || []).map((lm) => lm.map((p) => [1 - p.x, p.y]));   // mirror x: selfie view
+    this.onHands?.(this._out, t);
   }
 
   stop() {
+    this._stopped = true;
     this.running = false;
-    this.stream?.getTracks().forEach((t) => t.stop());
+    this._abortInit?.();
+    this.stream?.getTracks().forEach((tr) => tr.stop());
     this.stream = null;
-    this.landmarker?.close?.();
-    this.landmarker = null;
+    this.worker?.terminate(); this.worker = null;
+    this.landmarker?.close?.(); this.landmarker = null;
   }
 }

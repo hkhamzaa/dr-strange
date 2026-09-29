@@ -1,121 +1,130 @@
-// The gesture engine: state machine transitions, and every row of the gesture map, driven with
-// synthetic hands exactly the way a real camera frame would be. Nothing here calls a Sigil method
-// directly — every assertion reads state that only a correctly-wired intent could have produced.
+// The single-hand map: presence casts/uncasts, openness sizes, roll rotates, the three-finger pose
+// splits. Synthetic hands go through the real Controller -> GestureMapper -> bus -> Sigil path.
 import { test, expect } from '@playwright/test';
+import { openApp, watchErrors } from './helpers.js';
 
-test.beforeEach(async ({ page }) => { await page.goto('/?manual=1'); await page.waitForFunction(() => window.sigilApp); });
+test.beforeEach(async ({ page }) => { await openApp(page); });
 
-test('snap toggles DORMANT -> CASTING -> ACTIVE -> DISMISSING -> DORMANT', async ({ page }) => {
+test('hand appears -> casts immediately on the palm; hand lost -> uncasts after the grace period', async ({ page }) => {
+  const noErrors = watchErrors(page);
   const r = await page.evaluate(async () => {
-    const W = window.sigilApp;
-    const out = { start: W.status().state };
-    const press = () => W.synth({ pose: 'snap_pressed', cx: 0.5, cy: 0.5 });
-    const release = () => W.synth({ pose: 'snap_released', cx: 0.5, cy: 0.5 });
-    await W.advance(0.14, press); await W.advance(0.2, release);
-    out.afterSnap1 = W.status().state;
-    await W.advance(1.3, null);
-    out.afterCastWait = W.status().state;
-    await W.advance(0.14, press); await W.advance(0.2, release);
-    out.afterSnap2 = W.status().state;
-    await W.advance(1.3, null);
-    out.afterDismissWait = W.status().state;
+    const W = window.sigilApp, out = {};
+    out.start = W.status().state;
+    W.advance(0.1, () => W.synth({ pose: 'open', cx: 0.3, cy: 0.5 }));
+    out.after100ms = { state: W.status().state, x: W.status().sigilPos[0] };
+    W.advance(1.0);
+    out.settled = W.status().state;
+    W.advance(0.35, null);
+    out.inGrace = W.status().state;                           // still there: a 0.35s dropout is survivable
+    W.advance(0.3, () => W.synth({ pose: 'open', cx: 0.3, cy: 0.5 }));
+    out.backFromDropout = W.status().state;
+    W.advance(0.6, null);
+    out.afterGrace = W.status().state;                       // 0.6s > 0.5s grace: dismissing
+    W.advance(0.5, null);
+    out.gone = W.status().state;
     return out;
   });
-  expect(r).toEqual({ start: 'dormant', afterSnap1: 'casting', afterCastWait: 'active', afterSnap2: 'dismissing', afterDismissWait: 'dormant' });
+  expect(r.start).toBe('dormant');
+  expect(r.after100ms.state).toBe('casting');
+  expect(r.after100ms.x).toBeLessThan(-0.3);                 // cast in on the left-hand palm, not the centre
+  expect(r.settled).toBe('active');
+  expect(r.inGrace).toBe('active');
+  expect(r.backFromDropout).toBe('active');
+  expect(r.afterGrace).toBe('dismissing');
+  expect(r.gone).toBe('dormant');
+  noErrors();
 });
 
-test('open palm held 0.5s while DORMANT summons as a fallback', async ({ page }) => {
+test('openness drives size monotonically; a fist gives the smallest (smol) size', async ({ page }) => {
   const r = await page.evaluate(async () => {
     const W = window.sigilApp;
-    const out = {};
-    await W.advance(0.35, () => W.synth({ pose: 'open', cx: 0.5, cy: 0.5 }));
-    out.beforeHoldDone = W.status().state;                    // debounce settling + partway through the hold
-    await W.advance(0.4, () => W.synth({ pose: 'open', cx: 0.5, cy: 0.5 }));
-    out.afterHoldDone = W.status().state;
-    return out;
-  });
-  expect(r.beforeHoldDone).toBe('dormant');
-  expect(r.afterHoldDone).toBe('casting');
-});
-
-test('openness maps continuously to size between smol and full', async ({ page }) => {
-  const r = await page.evaluate(async () => {
-    const W = window.sigilApp;
-    W.forceActive();
-    await W.advance(0.1);
-    await W.advance(1.8, () => W.synth({ pose: 'fist', cx: 0.5, cy: 0.5 }));
-    const smolScale = W.status().sigilScale;
-    await W.advance(1.8, () => W.synth({ pose: 'open', cx: 0.5, cy: 0.5 }));
-    const fullScale = W.status().sigilScale;
-    return { smolScale, fullScale, smolPreset: W.CFG.sizePresets.smol, fullPreset: W.CFG.sizePresets.full };
-  });
-  expect(r.smolScale).toBeLessThan(r.fullScale);
-  expect(Math.abs(r.smolScale - r.smolPreset)).toBeLessThan(0.1);
-  expect(Math.abs(r.fullScale - r.fullPreset)).toBeLessThan(0.1);
-});
-
-test('pinch + hand-scale change drives explode; releasing eases into regroup', async ({ page }) => {
-  const r = await page.evaluate(async () => {
-    const W = window.sigilApp;
-    W.forceActive();
-    await W.advance(0.1);
-    await W.advance(0.15, () => W.synth({ pose: 'pinch', cx: 0.5, cy: 0.5, s: 0.085 }));       // arm at a reference scale
-    await W.advance(0.6, () => W.synth({ pose: 'pinch', cx: 0.5, cy: 0.5, s: 0.085 * 0.5 }));  // hand "moves back" (shrinks)
-    const mid = W.status().sigil.exploded;
-    await W.advance(1.0, () => W.synth({ pose: 'open', cx: 0.5, cy: 0.5 }));                   // let go
-    const after = W.status().sigil.exploded;
-    return { mid, after };
-  });
-  expect(r.mid).toBeGreaterThan(0.6);
-  expect(r.after).toBeLessThan(0.05);
-});
-
-test('peace cycles solo through every component in order, then regroups, respecting the cooldown', async ({ page }) => {
-  const r = await page.evaluate(async () => {
-    const W = window.sigilApp;
-    W.forceActive();
-    await W.advance(0.1);
-    const seen = [];
-    for (let i = 0; i < 6; i++) {
-      await W.advance(0.3, () => W.synth({ pose: 'peace', cx: 0.5, cy: 0.5 }));
-      await W.advance(0.8, () => W.synth({ pose: 'open', cx: 0.5, cy: 0.5 }));   // release + clear the cooldown
-      seen.push(W.status().sigil.solo);
+    W.advance(1.2, () => W.synth({ pose: 'fist' }));
+    const fist = W.status().sigilScale;
+    const sizes = [];
+    for (const f of [0, 0.2, 0.4, 0.6, 0.8, 1]) {
+      W.advance(0.6, () => W.synth({ pose: 'partial', f }));
+      sizes.push(W.status().sigilScale);
     }
-    // a peace held continuously past its cooldown must NOT re-trigger without a release in between
-    await W.advance(0.3, () => W.synth({ pose: 'peace', cx: 0.5, cy: 0.5 }));
-    const first = W.status().sigil.solo;
-    await W.advance(1.0, () => W.synth({ pose: 'peace', cx: 0.5, cy: 0.5 }));    // still held, cooldown alone elapses
-    const stillHeld = W.status().sigil.solo;
-    return { seen, first, stillHeld };
+    return { fist, sizes, presets: W.CFG.sizePresets };
   });
-  expect(r.seen).toEqual(['outerSeal', 'tickRing', 'starCore', 'innerSeal', 'heart', null]);
-  expect(r.stillHeld).toBe(r.first);     // no release edge -> no second trigger, even once cooldown alone has passed
+  expect(Math.abs(r.fist - r.presets.smol)).toBeLessThan(0.02);
+  // non-decreasing (the first steps of a curling hand all still read as a fist), strictly rising overall
+  for (let i = 1; i < r.sizes.length; i++) expect(r.sizes[i]).toBeGreaterThanOrEqual(r.sizes[i - 1] - 1e-4);
+  expect(r.sizes[2]).toBeGreaterThan(r.sizes[0] + 0.05);
+  expect(Math.abs(r.sizes[r.sizes.length - 1] - r.presets.full)).toBeLessThan(0.03);
+  const half = r.sizes[3];                                   // f = 0.6: somewhere strictly in between
+  expect(half).toBeGreaterThan(r.presets.smol + 0.1);
+  expect(half).toBeLessThan(r.presets.full - 0.1);
 });
 
-test('jitter: noisy landmarks around a pose boundary do not flip the stable pose more than once', async ({ page }) => {
+test('hand roll drives the sigil rotation one to one (screen direction preserved)', async ({ page }) => {
   const r = await page.evaluate(async () => {
-    const { Controller } = await import('/src/input/controller.js');
-    const { hand } = await import('/src/input/synth.js');
-    const c = new Controller();
-    const trace = [];
-    let t = 0;
-    // a short noisy burst flickering between two different poses, too short to satisfy the 4-frame
-    // hold either way, followed by a long clean run that should settle exactly once
-    const burst = Array.from({ length: 6 }, (_, i) => hand({ pose: i % 2 === 0 ? 'open' : 'fist', cx: 0.5, cy: 0.5 }));
-    const settle = Array.from({ length: 20 }, () => hand({ pose: 'open', cx: 0.5, cy: 0.5 }));
-    for (const lm of [...burst, ...settle]) { c.onHand(lm, t); t += 1 / 30; trace.push(c.pose); }
-    const transitions = trace.reduce((n, p, i) => n + (i > 0 && p !== trace[i - 1] ? 1 : 0), 0);
-    return { trace, transitions, final: trace[trace.length - 1] };
+    const W = window.sigilApp, out = [];
+    for (const angle of [0.5, -0.8, 1.3]) {
+      W.advance(0.8, () => W.synth({ pose: 'open', angle }));
+      out.push({ angle, roll: W.status().sigilRoll, handRoll: W.status().roll });
+    }
+    return out;
   });
-  expect(r.final).toBe('open');
-  expect(r.transitions).toBe(1);     // exactly the one clean none -> open transition, no flicker from the burst
+  for (const { angle, roll, handRoll } of r) {
+    expect(Math.abs(handRoll - angle)).toBeLessThan(0.02);
+    expect(Math.abs(roll + angle)).toBeLessThan(0.03);       // image clockwise = three.js negative z
+  }
 });
 
-test('keeps Phase 1 boot behaviour: ?nocam=1 still forces ACTIVE and casts with no gesture', async ({ page }) => {
+test('three-finger pose splits the sigil, holding keeps it split, releasing regroups in ~0.6s', async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const W = window.sigilApp, out = {};
+    W.advance(1.2, () => W.synth({ pose: 'open' }));
+    out.sizeBefore = W.status().sigilScale;
+    W.advance(0.1, () => W.synth({ pose: 'three' }));
+    out.beforeDwell = W.status().sigil.exploded;            // 0.1s < 0.15s dwell: not yet
+    W.advance(0.3);
+    out.split = W.status().sigil.exploded;
+    W.advance(1.5);
+    out.held = W.status().sigil.exploded;
+    out.sizeDuring = W.status().sigilScale;                  // frozen, not shrunk toward the three-finger openness
+    W.advance(0.2, () => W.synth({ pose: 'open' }));
+    out.released = W.status().sigil.exploded;
+    W.advance(0.6);
+    out.heartScale = W.part('heart').scale;                  // 1 = assembled
+    return out;
+  });
+  expect(r.beforeDwell).toBe(0);
+  expect(r.split).toBe(1);
+  expect(r.held).toBe(1);
+  expect(Math.abs(r.sizeDuring - r.sizeBefore)).toBeLessThan(0.03);
+  expect(r.released).toBe(0);
+  expect(Math.abs(r.heartScale - 1)).toBeLessThan(0.08);
+});
+
+test('jitter: noisy landmarks never flicker the split on or off', async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const W = window.sigilApp;
+    const { on } = await import('/src/bus/bus.js');
+    let seed = 7;
+    const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 - 0.5; };
+    const noisy = (pose) => () => W.synth({ pose, s: 0.1 }).map(([x, y]) => [x + rnd() * 0.012, y + rnd() * 0.012]);
+    const amounts = [];
+    on('explode', (p) => { if ((p.sigil ?? 'A') === 'A') amounts.push(p.amount); });
+    W.advance(1.2, noisy('open'));
+    const openFlips = amounts.length;
+    W.advance(2.0, noisy('three'));
+    const threeFlips = amounts.slice(openFlips);
+    const heldSplit = W.status().sigil.exploded;
+    W.advance(1.0, noisy('peace'));
+    return { openFlips, threeFlips, heldSplit, after: amounts.slice(openFlips + threeFlips.length) };
+  });
+  expect(r.openFlips).toBe(0);                  // a jittery open hand never splits
+  expect(r.threeFlips).toEqual([1]);            // one split, no on/off/on
+  expect(r.heldSplit).toBe(1);
+  expect(r.after).toEqual([0]);                 // one regroup when the pose changes to peace
+});
+
+test('?nocam=1 still boots straight into a cast sigil with no hand and keeps it', async ({ page }) => {
   await page.goto('/?manual=1&nocam=1');
   await page.waitForFunction(() => window.sigilApp);
-  await page.evaluate(async () => { await window.sigilApp.advance(1.6); });
-  const s = await page.evaluate(() => window.sigilApp.status());
+  const s = await page.evaluate(async () => { window.sigilApp.advance(3.0); return window.sigilApp.status(); });
   expect(s.state).toBe('active');
   expect(s.sigil.components.heart.reveal).toBeGreaterThan(0.9);
 });

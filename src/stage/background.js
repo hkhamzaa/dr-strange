@@ -17,10 +17,20 @@ uniform float uDim;
 uniform float uDesat;
 uniform vec3 uBgColor;
 uniform float uAspect;
+uniform float uVideoAspect;
+
+// "background-size: cover" — fills the screen without stretching, cropping whichever axis the
+// video has spare on, instead of squashing it to the screen's own aspect ratio.
+vec2 coverUV(vec2 uv) {
+  if (uAspect > uVideoAspect) return vec2(uv.x, (uv.y - 0.5) * (uVideoAspect / uAspect) + 0.5);
+  return vec2((uv.x - 0.5) * (uAspect / uVideoAspect) + 0.5, uv.y);
+}
+
 void main() {
   vec3 col;
   if (uMode > 0.5 && uHasVideo > 0.5) {
-    vec2 uv = vec2(1.0 - vUv.x, vUv.y);
+    vec2 uv = coverUV(vUv);
+    uv.x = 1.0 - uv.x;   // mirrored, selfie view
     vec3 v = texture2D(uVideo, uv).rgb;
     float g = dot(v, vec3(0.299, 0.587, 0.114));
     v = mix(v, vec3(g), uDesat);
@@ -45,6 +55,7 @@ export function makeBackground(THREE, videoEl) {
       uMode: { value: CFG.background.mode === 'ar' ? 1 : 0 },
       uDim: { value: CFG.background.arDim }, uDesat: { value: CFG.background.arDesaturate },
       uBgColor: { value: CFG.color.background }, uAspect: { value: innerWidth / innerHeight },
+      uVideoAspect: { value: 16 / 9 },   // updated once real video dimensions are known
     },
   });
   const mesh = new THREE.Mesh(geo, mat);
@@ -62,7 +73,10 @@ export function makeBackground(THREE, videoEl) {
   return {
     mesh,
     setMode(mode) { mat.uniforms.uMode.value = mode === 'ar' ? 1 : 0; },
-    setHasVideo(has) { mat.uniforms.uHasVideo.value = has ? 1 : 0; },
+    setHasVideo(has) {
+      mat.uniforms.uHasVideo.value = has ? 1 : 0;
+      if (has && videoEl.videoWidth) mat.uniforms.uVideoAspect.value = videoEl.videoWidth / videoEl.videoHeight;
+    },
     resize(camera) { fit(camera, -6); },
   };
 }
