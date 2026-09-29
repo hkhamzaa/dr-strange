@@ -5,9 +5,11 @@
 // Browsers that can't run the worker fall back to detecting on the main thread (same pacing).
 import { CFG } from '../config.js';
 
-const VISION = new URL('../../node_modules/@mediapipe/tasks-vision/vision_bundle.mjs', import.meta.url).href;
-const WASM = new URL('node_modules/@mediapipe/tasks-vision/wasm', location.href).href;
-const MODEL = new URL('models/hand_landmarker.task', location.href).href;
+// Third-party code and the model live under vendor/ (not node_modules/: some hosts strip folders with
+// that name from static output). server.mjs aliases vendor/ to node_modules in dev; build.mjs copies it.
+const VISION = new URL('vendor/mediapipe/vision_bundle.mjs', location.href).href;
+const WASM = new URL('vendor/mediapipe/wasm', location.href).href;
+const MODEL = new URL('vendor/models/hand_landmarker.task', location.href).href;
 
 const pts = () => Array.from({ length: 21 }, () => [0, 0]);
 

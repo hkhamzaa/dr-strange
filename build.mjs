@@ -1,8 +1,9 @@
 // Zero-bundler production build. Copies src/ into dist/ with content-hashed filenames (so a CDN
 // can cache them forever) and rewrites the relative import specifiers between them to match.
 // Vendor code (three, MediaPipe) and large binary assets (wasm, the hand model) are copied
-// byte-for-byte at their existing node_modules-relative paths, since tracker.js and the importmap
-// in index.html already point there — nothing to rewrite, and their own version pin is the cache key.
+// byte-for-byte into dist/vendor/ (NOT node_modules/: some hosts strip folders with that name from
+// static output). The importmap in index.html and tracker.js point at vendor/, and server.mjs serves
+// the same URLs from node_modules in dev. Their own version pin is the cache key.
 import { createHash } from 'node:crypto';
 import { mkdir, readdir, readFile, writeFile, rm, cp, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -50,7 +51,7 @@ async function buildSrc() {
     let text = raw.get(r).toString('utf8');
     text = text.replace(IMPORT_RE, (m, kw, q, spec) => {
       const targetRel = path.posix.normalize(path.posix.join(dir, spec));
-      if (targetRel.startsWith('../')) return m;          // outside src/ (vendored node_modules): path is kept as-is
+      if (targetRel.startsWith('../')) return m;          // outside src/: path is kept as-is
       const hashed = nameMap.get(targetRel);
       if (!hashed) throw new Error(`build: unresolved import '${spec}' in src/${r}`);
       return `${kw}${q}${relSpec(dir, hashed)}${q}`;
@@ -75,34 +76,26 @@ async function buildStyles() {
   return hashed;
 }
 
-async function copyVendor() {
-  const files = [
-    'node_modules/three/build/three.module.js',
-    'node_modules/three/examples/jsm/postprocessing/EffectComposer.js',
-    'node_modules/three/examples/jsm/postprocessing/RenderPass.js',
-    'node_modules/three/examples/jsm/postprocessing/UnrealBloomPass.js',
-    'node_modules/three/examples/jsm/postprocessing/OutputPass.js',
-    'node_modules/three/examples/jsm/postprocessing/ShaderPass.js',
-    'node_modules/three/examples/jsm/postprocessing/MaskPass.js',
-    'node_modules/three/examples/jsm/postprocessing/Pass.js',
-    'node_modules/three/examples/jsm/shaders/CopyShader.js',
-    'node_modules/three/examples/jsm/shaders/LuminosityHighPassShader.js',
-    'node_modules/three/examples/jsm/shaders/OutputShader.js',
-    'node_modules/@mediapipe/tasks-vision/vision_bundle.mjs',
-    'models/hand_landmarker.task',
-  ];
-  for (const src of files) {
-    const from = path.join(ROOT, src);
-    const to = path.join(DIST, src);
-    await mkdir(path.dirname(to), { recursive: true });
-    await cp(from, to);
-  }
+// [where it lives in the repo, where it goes under dist/vendor/]
+const VENDOR = [
+  ['node_modules/three/build/three.module.js', 'three/build/three.module.js'],
+  ...['postprocessing/EffectComposer', 'postprocessing/RenderPass', 'postprocessing/UnrealBloomPass', 'postprocessing/OutputPass',
+    'postprocessing/ShaderPass', 'postprocessing/MaskPass', 'postprocessing/Pass', 'shaders/CopyShader',
+    'shaders/LuminosityHighPassShader', 'shaders/OutputShader'].map((f) => [`node_modules/three/examples/jsm/${f}.js`, `three/examples/jsm/${f}.js`]),
+  ['node_modules/@mediapipe/tasks-vision/vision_bundle.mjs', 'mediapipe/vision_bundle.mjs'],
   // The wasm loader picks between simd/nosimd/plain variants at runtime, and between .js/.wasm
   // pairs, so the whole wasm/ folder travels rather than hand-picking files.
-  const wasmDir = path.join(ROOT, 'node_modules/@mediapipe/tasks-vision/wasm');
-  const wasmOut = path.join(DIST, 'node_modules/@mediapipe/tasks-vision/wasm');
-  await mkdir(wasmOut, { recursive: true });
-  await cp(wasmDir, wasmOut, { recursive: true });
+  ['node_modules/@mediapipe/tasks-vision/wasm', 'mediapipe/wasm'],
+  ['models/hand_landmarker.task', 'models/hand_landmarker.task'],
+];
+
+async function copyVendor() {
+  for (const [src, dest] of VENDOR) {
+    const from = path.join(ROOT, src), to = path.join(DIST, 'vendor', dest);
+    await stat(from).catch(() => { throw new Error(`build: missing ${src} (did \`npm install\` run?)`); });
+    await mkdir(path.dirname(to), { recursive: true });
+    await cp(from, to, { recursive: true });
+  }
 }
 
 async function buildHtml(appEntry, cssEntry) {
@@ -135,6 +128,22 @@ async function main() {
   }
 
   console.log(`dist/ built — entry src/${appEntry}, styles ${cssEntry}`);
+  await listDist();
+}
+
+/** Print everything in dist/ (so a host's build log shows exactly what it will serve) and fail the
+ *  build if the site can't possibly load. */
+async function listDist() {
+  const files = (await walk(DIST)).map((f) => path.relative(DIST, f).split(path.sep).join('/')).sort();
+  const sizes = await Promise.all(files.map(async (f) => (await stat(path.join(DIST, f))).size));
+  console.log(`\ndist/ listing (${files.length} files):`);
+  files.forEach((f, i) => console.log(`  ${String(sizes[i]).padStart(9)}  ${f}`));
+  const need = ['index.html', 'vendor/three/build/three.module.js', 'vendor/mediapipe/vision_bundle.mjs', 'vendor/models/hand_landmarker.task'];
+  const missing = need.filter((f) => !files.includes(f));
+  if (missing.length) {
+    console.error(`\nbuild FAILED: dist/ is missing ${missing.join(', ')}`);
+    process.exit(1);
+  }
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

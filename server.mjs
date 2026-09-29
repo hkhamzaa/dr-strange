@@ -7,6 +7,9 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const PORT = Number(process.argv[2] || process.env.PORT || 5173);
+// vendor/ is where the app (and dist/) find third-party code and the model; in dev it's served straight from
+// their real homes so there is one URL scheme everywhere.
+const VENDOR = [['/vendor/three/', 'node_modules/three/'], ['/vendor/mediapipe/', 'node_modules/@mediapipe/tasks-vision/'], ['/vendor/models/', 'models/']];
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.wasm': 'application/wasm', '.task': 'application/octet-stream',
@@ -16,7 +19,9 @@ const TYPES = {
 createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://localhost');
-    let path = normalize(join(ROOT, decodeURIComponent(url.pathname)));
+    let pathname = decodeURIComponent(url.pathname);
+    for (const [from, to] of VENDOR) if (pathname.startsWith(from)) { pathname = '/' + to + pathname.slice(from.length); break; }
+    let path = normalize(join(ROOT, pathname));
     if (!path.startsWith(ROOT)) { res.writeHead(403).end('forbidden'); return; }
     if ((await stat(path).catch(() => null))?.isDirectory()) path = join(path, 'index.html');
     const body = await readFile(path);

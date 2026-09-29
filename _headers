@@ -20,14 +20,11 @@
 
 # Vendored third-party code and the model file — versioned by the pinned npm/model version, not
 # hashed per-build, so a shorter revalidating cache instead of "immutable".
-/node_modules/*
+/vendor/*
   Cache-Control: public, max-age=86400
 
-/models/*
-  Cache-Control: public, max-age=86400
-
-/node_modules/@mediapipe/tasks-vision/wasm/*.wasm
+/vendor/mediapipe/wasm/*.wasm
   Content-Type: application/wasm
 
-/models/*.task
+/vendor/models/*.task
   Content-Type: application/octet-stream
