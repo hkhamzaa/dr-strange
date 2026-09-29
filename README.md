@@ -151,7 +151,6 @@ model at the same relative paths the app already expects. `dist/` is a static si
 - **Netlify** — publish directory `dist`, build command `npm run build`. `_headers` sets
   long-cache-immutable on the hashed files, a shorter revalidating cache on vendored assets, and
   no-cache on `index.html`/`sw.js`.
-- **Vercel** — `vercel.json` sets `buildCommand`/`outputDirectory` and the same header rules.
 - **GitHub Pages** — `.github/workflows/deploy.yml` builds and publishes `dist/` on every push to
   `main`. Enable Pages under Settings → Pages → Source → "GitHub Actions" once. All references are
   relative, so a project-page subpath works.
