@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SIGIL</title>
+  <meta name="description" content="A glowing magic circle, controlled only by webcam hand gestures.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='24' fill='none' stroke='%23ffb238' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='6' fill='%23fff2c0'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./node_modules/three/build/three.module.js",
+        "three/addons/": "./node_modules/three/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <canvas id="stage" aria-label="The sigil"></canvas>
+  <video id="cam" playsinline muted aria-hidden="true"></video>
+
+  <div id="start" class="start">
+    <div class="start-card glass">
+      <div class="mark" aria-hidden="true"></div>
+      <h1>SIGIL</h1>
+      <p>A glowing magic circle, drawn and turned by your hand in front of the webcam. No keyboard, no mouse.</p>
+      <button id="bEnableCam" class="primary">Enable camera</button>
+      <p id="startMsg" class="start-msg"></p>
+    </div>
+  </div>
+
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>

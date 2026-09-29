@@ -1,0 +1,8 @@
+node_modules/
+test-results/
+playwright-report/
+screenshots/
+*.log
+
+# unrelated leftover content, not part of the SIGIL project
+dr-strange-chakra-shield/

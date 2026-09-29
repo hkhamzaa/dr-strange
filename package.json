@@ -1,0 +1,23 @@
+{
+  "name": "sigil",
+  "version": "0.1.0",
+  "description": "A gesture-controlled glowing magic circle. No hands touch the keyboard.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "playwright test",
+    "test:report": "playwright show-report"
+  },
+  "keywords": ["mediapipe", "three.js", "webgl", "hand-tracking", "gestures", "shader"],
+  "license": "MIT",
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^1.0.1",
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
+  }
+}
