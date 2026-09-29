@@ -7,59 +7,32 @@ html, body {
 }
 body { font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; color: #ffe3b0; -webkit-user-select: none; user-select: none; }
 
-#stage { position: fixed; inset: 0; display: block; width: 100%; height: 100%; touch-action: none; }
+#stage { position: fixed; inset: 0; display: block; width: 100vw; height: 100vh; height: 100dvh; border: 0; outline: 0; touch-action: none; }
 #cam { position: fixed; width: 2px; height: 2px; opacity: 0; pointer-events: none; }
 
-/* Portrait phones: the sigil scales to the smaller screen dimension already (its own perspective
-   camera fits the viewport aspect), this just keeps the start card and HUD comfortably inset under
-   notches/home indicators. */
 @media (max-width: 600px), (orientation: portrait) {
-  .start-card { max-width: 88vw; padding: 28px 22px; }
-  .start-card h1 { font-size: 19px; letter-spacing: 0.18em; }
   button.primary { padding: 15px 26px; font-size: 15px; min-height: 48px; }   /* a real touch target */
 }
 @supports (padding: max(0px)) {
   .start { padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
 }
 
-.glass {
-  background: rgba(14, 8, 3, 0.72);
-  border: 1px solid rgba(255, 178, 56, 0.28);
-  border-radius: 16px;
-  backdrop-filter: blur(8px);
-}
-
+/* The start layer is just a centred button over a blurred, slightly darkened copy of the canvas. */
 .start {
   position: fixed; inset: 0; z-index: 100;
-  display: flex; align-items: center; justify-content: center;
-  background: radial-gradient(ellipse at center, rgba(40, 20, 6, 0.55), rgba(2, 1, 0, 0.92));
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  background: rgba(5, 3, 1, 0.35);
+  -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
 }
 .start[hidden] { display: none; }
-.start-card {
-  max-width: 480px; padding: 36px 32px; text-align: center;
-}
-.start-card .mark {
-  width: 64px; height: 64px; margin: 0 auto 14px;
-  border-radius: 50%;
-  border: 3px solid #ffb238;
-  box-shadow: 0 0 24px 4px rgba(255, 150, 40, 0.55);
-  position: relative;
-}
-.start-card .mark::after {
-  content: ''; position: absolute; inset: 24px;
-  border-radius: 50%; background: #fff2c0;
-  box-shadow: 0 0 14px 3px #ffcf7e;
-}
-.start-card h1 { margin: 0 0 8px; letter-spacing: 0.24em; font-weight: 700; font-size: 22px; }
-.start-card p { color: #e9c99a; font-size: 14px; line-height: 1.5; }
-.start-buttons, .start-card button { margin-top: 10px; }
 button.primary {
-  font: inherit; font-weight: 600; font-size: 14px; letter-spacing: 0.03em;
-  padding: 12px 22px; border-radius: 10px; border: 1px solid rgba(255, 178, 56, 0.5);
+  font: inherit; font-weight: 600; font-size: 15px; letter-spacing: 0.03em;
+  padding: 13px 26px; border-radius: 999px; border: 1px solid rgba(255, 178, 56, 0.55);
   background: linear-gradient(180deg, #ffb238, #d9700f); color: #1a0e02; cursor: pointer;
 }
 button.primary:hover { filter: brightness(1.08); }
-.start-msg { min-height: 18px; font-size: 12px; color: #ffb238; }
+button.primary:disabled { opacity: 0.6; cursor: progress; filter: none; }
+.start-msg { margin: 0; min-height: 18px; font-size: 13px; color: #ffe3b0; text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7); text-align: center; max-width: 80vw; }
 
 .hint {
   position: fixed; left: 50%; bottom: max(8%, env(safe-area-inset-bottom)); z-index: 40;

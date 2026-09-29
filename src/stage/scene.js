@@ -26,7 +26,8 @@ export function makeScene(THREE, canvas) {
   let dprClamp = CFG.dpr.clamp;
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, dprClamp));
   renderer.setSize(innerWidth, innerHeight, false);
-  renderer.setClearColor(new THREE.Color(...CFG.color.background), 1);
+  // AR: the sigil scene renders on black and is laid over the camera by the composite pass
+  renderer.setClearColor(CFG.background.mode === 'ar' ? new THREE.Color(0, 0, 0) : new THREE.Color(...CFG.color.background), 1);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   // The sigil is many additive-blended layers stacked in a small radius — without tone mapping
   // their sum clips straight to white. OutputPass (the last composer pass) applies this at the end,

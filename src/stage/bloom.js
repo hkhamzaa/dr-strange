@@ -5,17 +5,21 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { CFG } from '../config.js';
 
-export function makeBloom(THREE, renderer, scene, camera) {
+/** `finalPass`: the composer's last pass — the stock OutputPass (void) or the AR composite. */
+export function makeBloom(THREE, renderer, scene, camera, finalPass = new OutputPass()) {
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
-  const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), CFG.bloom.strength, CFG.bloom.radius, CFG.bloom.threshold);
+  const bc = CFG.background.mode === 'ar' ? CFG.ar.bloom : CFG.bloom;
+  const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), bc.strength, bc.radius, bc.threshold);
   composer.addPass(bloom);
-  composer.addPass(new OutputPass());
+  composer.addPass(finalPass);
 
   let scale = 1;
+  const size = new THREE.Vector2();
   function resize() {
-    composer.setSize(innerWidth, innerHeight);
-    bloom.setSize(Math.round(innerWidth * scale), Math.round(innerHeight * scale));
+    renderer.getSize(size);                     // the renderer's (dynamic-viewport) size, set by scene.js just before
+    composer.setSize(size.x, size.y);
+    bloom.setSize(Math.round(size.x * scale), Math.round(size.y * scale));
   }
   // The quality governor's lever: UnrealBloomPass's own internal mip chain renders at whatever
   // resolution setSize() was last called with, independent of the composer's own (full-res) size

@@ -35,17 +35,27 @@ void main() {
 }
 `;
 
-export function makeSparks(THREE) {
+/** `ar`: embers live in the sigil's own plane, in units of its radius, and the caller moves/scales
+ *  the Points to sit on the sigil (so they spawn around the hand, not across the whole frame). */
+export function makeSparks(THREE, { ar = false, seed = 4242 } = {}) {
   // Always allocate the full (high-tier) count once; the quality governor scales visible count via
   // setDrawRange() — no reallocation, no per-tier-change garbage.
   const n = CFG.sparks.count;
-  const rng = makeRng(CFG.seed + 4242);
+  const rng = makeRng(CFG.seed + seed);
   const pos = new Float32Array(n * 3), phase = new Float32Array(n), scale = new Float32Array(n);
   for (let i = 0; i < n; i++) {
-    const a = rng.random() * Math.PI * 2, r = 0.3 + rng.random() * CFG.sparks.spread;
-    pos[i * 3] = Math.cos(a) * r;
-    pos[i * 3 + 1] = CFG.floor.y + rng.random() * 0.3;
-    pos[i * 3 + 2] = Math.sin(a) * r;
+    const a = rng.random() * Math.PI * 2;
+    if (ar) {
+      const r = (0.25 + rng.random() * 0.75) * CFG.ar.sparkSpread;
+      pos[i * 3] = Math.cos(a) * r;
+      pos[i * 3 + 1] = Math.sin(a) * r * 0.7 - 0.25;
+      pos[i * 3 + 2] = 0.05 + rng.random() * 0.1;
+    } else {
+      const r = 0.3 + rng.random() * CFG.sparks.spread;
+      pos[i * 3] = Math.cos(a) * r;
+      pos[i * 3 + 1] = CFG.floor.y + rng.random() * 0.3;
+      pos[i * 3 + 2] = Math.sin(a) * r;
+    }
     phase[i] = rng.random();
     scale[i] = CFG.sparks.size * (0.5 + rng.random());
   }

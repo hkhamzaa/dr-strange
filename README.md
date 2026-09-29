@@ -17,9 +17,49 @@ npm start
 ```
 
 Open `http://localhost:5173` (camera access needs a secure context — `localhost` counts, a plain
-`http://` IP address does not), click **Enable camera**, and hold up a hand. The sigil casts in on
-your palm the moment it's in view. There is no calibration screen: the app starts with sane
+`http://` IP address does not), click **Enable camera**, and hold up a hand. The live, mirrored
+camera fills the screen and the sigil casts in on your palm the moment it's in view (see **AR
+mode**). There is no calibration screen: the app starts with sane
 defaults and silently adapts to your hand while you play (see **Calibration**).
+
+## AR mode (the default)
+
+The mirrored webcam feed is the whole stage — full brightness, natural colour (only a 6 % dim so
+the glow reads), `cover`-fitted with no letterboxing — and the sigil is composited on top of you,
+attached to your hand. `?bg=void` brings back the old near-black vignette stage as a dev override;
+nothing else switches it on or off.
+
+- **One transform for everything.** The palm centre goes from video coordinates to the screen with
+  the same cover-fit transform the video uses (`src/stage/cover.js`, mirrored in the composite
+  shader), so the sigil sits on the palm at any window size or aspect ratio. `tests/ar.spec.js`
+  renders a dot at a known video pixel and checks it lands within 2 px of where a palm at that
+  pixel is drawn, across five window shapes.
+- **Sized by the hand.** Base size follows the hand's size in frame (wrist → knuckle length), so
+  moving your hand closer makes the sigil larger — on top of the openness-driven size
+  (`CFG.ar.baseAtRef`, `refScale`).
+- **No trailing.** The palm is led forward by its filtered velocity × (time since the frame the
+  landmarks describe + the follow chase), capped at 120 ms and ramped in above a jitter-level speed
+  (`CFG.ar.predict`). Rendering never waits on detection: the video is uploaded to the GPU only when
+  the camera produces a new frame (`videoFeed.js`, requestVideoFrameCallback with a polling
+  fallback), and detection sees a separate 640-px-wide downscaled copy of each 1280×720 frame, so
+  the picture stays sharp and detection stays cheap.
+- **How the picture is composed.** The sigil scene + bloom render on black; the last composer pass
+  (`stage/background.js`) lays them over the video. That keeps the camera out of tone mapping and
+  bloom (natural colour) while the sigil still gets its ACES curve. The floor and reflection are
+  hidden in AR; the embers ride on each sigil rather than filling the frame.
+- **Readable on a bright wall.** Where the video behind the sigil is bright, the glow gets a small
+  boost and a soft dark halo is laid behind the strokes (which is what actually makes them read —
+  additive light on a white wall can't). A warm radial light spill lights the video around the
+  sigil; it's a gradient in the composite pass, not real lighting.
+- **Occlusion (off by default).** `?occlusion=1` / `CFG.ar.occlusion.enabled` draws the sigil
+  slightly behind the fingers: each finger's joints go through a convex hull, inflated to finger
+  width and feathered into a small 2D mask (the palm is left out — the sigil lives there). It is
+  off by default because a curled fist puts the fingers across the palm, which hides the sigil the
+  fist is meant to shrink; measure it on your camera before turning it on.
+- **Start screen.** A single "Enable camera" button over a blurred view of the canvas: dark until
+  you grant permission, then the live feed (blurred) while the hand tracker loads. No HUD in normal
+  mode; the only text on screen is "Show your hand to the camera", which goes away once a hand is
+  seen.
 
 ## Gestures
 
@@ -65,7 +105,7 @@ Thresholds live in `GESTURE_MAP` in `src/config.js`.
   stepping between 30 Hz detections. A sigil casting in on a newly seen hand appears directly on
   the palm (at that hand's size and roll) rather than sliding over from wherever it last was; a
   hand returning mid-fade reverses the sweep from where it got to.
-- **Camera:** 640×480 @ 30 fps requested, GPU delegate with CPU fallback, at most two hands per
+- **Camera:** 1280×720 @ 30 fps requested for the visible feed (detection runs on a 640-px downscaled copy), GPU delegate with CPU fallback, at most two hands per
   detection. MediaPipe's multi-second first-detection warm-up happens inside the worker before the
   start screen closes, so the first real frame isn't a stall.
 - **No per-frame allocation in our frame loop** (`tests/perf.spec.js`): reused intent payloads and
@@ -128,10 +168,11 @@ All three give HTTPS automatically, which the camera requires off `localhost`.
 | `?record=1` | (with `?debug=1`) a record button capturing canvas + audio to WebM |
 | `?quality=high\|mid\|low` | Pin a quality tier (disables the governor) |
 | `?recalibrate=1` | Reset the adapted calibration profile |
-| `?autostart=1` | Skip the start panel and request the camera immediately |
+| `?autostart=1` | Skip the start button and request the camera immediately |
 | `?nocam=1` | No camera: a fully cast idle sigil for visual tuning (the no-hand rule is off) |
 | `?anchor=hand\|stage` | Follow the palm (default) or stay centred |
-| `?bg=void\|ar` | Dark vignette (default) or the dimmed webcam feed, cover-cropped so the sigil sits on your palm as you see it |
+| `?bg=void` | Dev override: the old dark vignette stage instead of the camera. **AR — the live camera fullscreen — is the default**; there is no flag for it |
+| `?occlusion=1` | Draw the sigil slightly behind the fingers (soft finger-silhouette mask; off by default) |
 | `?dismiss=uncast\|dissolve\|shatter` | What "hand gone" looks like (default the fast uncast) |
 | `?dpr=<n>`, `?mute=1` | Device-pixel-ratio clamp; start muted |
 | `?manual=1` | Deterministic clock for tests — frames only advance via `window.sigilApp.advance()`; the real camera is never started |
@@ -183,7 +224,7 @@ die young and are collected by the cheap nursery GC.
   the tracker reports.
 - **"This browser cannot access a camera"** — use `localhost` or HTTPS.
 - **Camera denied / not found / lost** — an idle sigil shows and a **Retry camera** button appears.
-- **WebGL2 unsupported** — the start panel says so; use a recent Chrome, Edge, Firefox or Safari.
+- **WebGL2 unsupported** — the start screen says so; use a recent Chrome, Edge, Firefox or Safari.
 - **Low frame rate** — `?perf=1` shows render/detection fps; `?quality=low` isolates GPU cost.
 - **No sound** — audio unlocks on the "Enable camera" click; check `?mute=1` isn't set.
 - **Size range feels off** — give it a few seconds of opening and closing (it adapts), or reset
@@ -205,7 +246,11 @@ src/
   bus/     bus.js           the only channel visuals listen on; withTag() routes a mapper's intents to its sigil
   calib/   calibrate.js     silent rolling-window adaptation + persistence
   sigil/   shaders.js, glyphs.js, layer.js, component.js, sigil.js (the public Sigil API)
-  stage/   scene.js, bloom.js, floor.js, sparks.js, background.js
+  stage/   scene.js, bloom.js, floor.js, sparks.js
+           background.js    void quad, or the AR composite pass (camera + sigil + exposure/halo/spill)
+           cover.js         the one cover-fit transform (video <-> screen)
+           videoFeed.js     "a new camera frame arrived" -> one texture upload
+           occlusion.js     finger-silhouette mask (convex hulls), ?occlusion=1
   audio/   engine.js        synthesized WebAudio (no sample files)
   perf/    governor.js, overlay.js
   hud/     hud.js           ?debug=1 only
@@ -239,6 +284,7 @@ Playwright drives the real app in Chromium (real GPU) with deterministic synthet
   persistence and `?recalibrate=1`; scale invariance
 - `logic.spec.js` — pose classification at any rotation (including THREE and 4-of-5 OPEN), the
   16:9 regression, controller palm/roll/slot tracking
+- `ar.spec.js` — AR: a video pixel and the palm at that pixel land on the same screen pixel across window aspect ratios; the sigil projects onto the palm; boot with the fake camera shows the live picture (not black) with no HUD; `?bg=void` override; floor hidden, embers on the sigil, sigil size follows hand size; motion prediction; occlusion mask
 - `perf.spec.js` — retained heap, per-frame allocation, GPU resource stability
 - `e2e.spec.js` — the whole lifecycle in one run, no console errors, no GPU growth
 - `bus.spec.js`, `sigil.spec.js`, `boot.spec.js`, `audio.spec.js` — renderer, bus, boot, sound

@@ -49,6 +49,7 @@ export class Sigil {
 
     // root (whole-sigil) transform
     this.scale = CFG.sizePresets.mid; this.scaleTarget = CFG.sizePresets.mid;
+    this.base = 1; this.baseTarget = 1;          // AR: hand-size multiplier on top of the openness-driven scale
     this.pos = [0, 0, 0]; this.posTarget = [0, 0, 0];
     this.tilt = 0; this.tiltTarget = 0;          // rotation.x — a literal tilt (parallax)
     this.leanY = 0; this.leanYTarget = 0;        // rotation.y — the other axis of "leans toward the hand"
@@ -123,6 +124,11 @@ export class Sigil {
     t = Math.min(1, Math.max(0, t));
     this.scaleTarget = CFG.sizePresets.smol + (CFG.sizePresets.full - CFG.sizePresets.smol) * t;
   }
+
+  /** Base size from the hand's size in frame (AR). `scale` stays the openness-driven part. */
+  setBase(b, snap = false) { this.baseTarget = b; if (snap) this.base = b; }
+  /** World-space outer radius of the drawn sigil. */
+  get radius() { return this.scale * this.base; }
 
   setSpinMul(m) { this.spinMulTarget = m; }
   setScale(s) { this.scaleTarget = s; }
@@ -209,6 +215,7 @@ export class Sigil {
     }
 
     this.scale = ease(this.scale, this.scaleTarget, dt, CFG.sizeTransitionS);
+    this.base = ease(this.base, this.baseTarget, dt, CFG.sizeTransitionS);
     for (let i = 0; i < 3; i++) this.pos[i] = ease(this.pos[i], this.posTarget[i], dt, this.posTau);
     this.tilt = ease(this.tilt, this.tiltTarget, dt, CFG.anchor.tiltTau);
     this.leanY = ease(this.leanY, this.leanYTarget, dt, CFG.anchor.tiltTau);
@@ -219,7 +226,7 @@ export class Sigil {
     this._flashAmt *= Math.exp(-dt / CFG.gestures.pulse.flashTau);
     if (this._flashAmt < 0.002) this._flashAmt = 0;
 
-    this.root.scale.setScalar(this.scale);
+    this.root.scale.setScalar(this.scale * this.base);
     this.root.position.set(this.pos[0], this.pos[1], this.pos[2]);
     this.root.rotation.x = this.tilt;
     this.root.rotation.y = this.leanY;

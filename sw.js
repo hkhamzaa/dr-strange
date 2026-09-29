@@ -1,7 +1,7 @@
 // Minimal offline shell. The camera never goes through fetch (getUserMedia is a separate browser
 // API), so there is nothing camera-related to exclude here — this only ever sees GET requests for
 // the page, its hashed JS/CSS, and the vendored three/MediaPipe/model assets.
-const CACHE = 'sigil-v1';
+const CACHE = 'sigil-v2';
 
 self.addEventListener('install', (e) => { self.skipWaiting(); });
 

@@ -20,6 +20,7 @@ export class HandCamera {
     this.mode = null;            // 'worker' | 'main'
     this.delegate = null;
     this.onHands = null;         // (hands, tSeconds) => void
+    this.onPreview = null;       // () => void — camera is playing (before the tracker has loaded)
     this.onEnded = null;         // () => void — the camera track ended (unplugged, taken by another app)
     this._stopped = false;
     this.minInterval = 0;        // seconds; the app raises this to probe slowly while nobody's there
@@ -57,6 +58,7 @@ export class HandCamera {
     this.video.srcObject = this.stream;
     this.video.muted = true; this.video.playsInline = true;
     await this.video.play();
+    this.onPreview?.();          // the live picture can show now, while the tracker is still loading
     onStatus('Loading hand tracker…');
     const ended = () => Object.assign(new Error('The camera stopped while the hand tracker was loading.'), { name: 'NotReadableError' });
     try { await this._startWorker(); this.mode = 'worker'; }
@@ -139,10 +141,21 @@ export class HandCamera {
 
   _sendToWorker(t) {
     this._busy = true;
-    createImageBitmap(this.video).then((bitmap) => {
+    this._detectCopy().then((bitmap) => {
       if (!this.running || !this.worker) { bitmap.close(); this._busy = false; return; }
       this.worker.postMessage({ type: 'frame', bitmap, ts: this._nextTs(), buf: this._flat, t }, [bitmap, this._flat.buffer]);
     }, () => { this._busy = false; });
+  }
+
+  /** The frame detection sees: a downscaled copy (aspect kept), so the visible feed can be 720p
+   *  without detection paying for it. Landmarks are normalized, so the scale never matters downstream. */
+  _detectCopy() {
+    const v = this.video, dw = CFG.tracker.detectWidth;
+    if (v.videoWidth > dw && this._resizeOk !== false) {
+      return createImageBitmap(v, { resizeWidth: dw, resizeHeight: Math.round((dw * v.videoHeight) / v.videoWidth), resizeQuality: 'low' })
+        .catch(() => { this._resizeOk = false; return createImageBitmap(v); });   // a browser without resize options: full frame
+    }
+    return createImageBitmap(v);
   }
 
   _workerDied(why) {

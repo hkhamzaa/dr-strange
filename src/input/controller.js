@@ -34,6 +34,7 @@ export class HandTrack {
     this.rawOpenness = 0;        // filtered, not normalized
     this.scale = 0;
     this.handX = 0.5; this.handY = 0.5;
+    this.vx = 0; this.vy = 0;    // palm velocity, image units / s (filtered) — the renderer leads the sigil by it
     this.roll = 0;
     this.pinch = false; this._pinchN = 0;
     this.three = false; this.threeArming = false; this._threeOnT = 0; this._threeOffT = 0;
@@ -79,8 +80,15 @@ export class HandTrack {
 
     // palm/roll/openness/scale come from the raw landmarks through their own filters — running
     // them off the already-filtered landmarks would stack two lags for no extra stability
+    const px = this.handX, py = this.handY;
     this.handX = this.fPalmX.filter((raw[0][0] + raw[9][0]) / 2, t);
     this.handY = this.fPalmY.filter((raw[0][1] + raw[9][1]) / 2, t);
+    if (fresh || dt < 1e-3) { this.vx = 0; this.vy = 0; }
+    else {
+      const k = 1 - Math.exp(-dt / CFG.ar.predict.velTau);
+      this.vx += ((this.handX - px) / dt - this.vx) * k;
+      this.vy += ((this.handY - py) / dt - this.vy) * k;
+    }
     const r = Controller.rollOf(raw, aspect);
     this._unrolled = fresh ? r : this._unrolled + wrap(r - this._rawRoll);   // continuous across ±π
     this._rawRoll = r;

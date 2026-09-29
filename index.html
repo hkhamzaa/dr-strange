@@ -24,14 +24,10 @@
   <video id="cam" playsinline muted aria-hidden="true"></video>
   <div id="hint" class="hint" role="status">Show your hand to the camera</div>
 
+  <!-- No art, no copy: a button over a blurred view of whatever the canvas shows (dark until the camera opens, then the live feed while the hand tracker loads). -->
   <div id="start" class="start">
-    <div class="start-card glass">
-      <div class="mark" aria-hidden="true"></div>
-      <h1>SIGIL</h1>
-      <p>A glowing magic circle that appears on your palm. Open your hand to grow it, close it to shrink it, turn it to spin it. No keyboard, no mouse.</p>
-      <button id="bEnableCam" class="primary">Enable camera</button>
-      <p id="startMsg" class="start-msg"></p>
-    </div>
+    <button id="bEnableCam" class="primary">Enable camera</button>
+    <p id="startMsg" class="start-msg" role="status"></p>
   </div>
 
   <script type="module" src="src/app.js"></script>

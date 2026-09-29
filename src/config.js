@@ -75,9 +75,29 @@ export const CFG = {
   },
 
   background: {
-    mode: qs.get('bg') || 'void',               // 'void' | 'ar'
-    arDim: 0.35,
-    arDesaturate: 0.6,
+    mode: qs.get('bg') === 'void' ? 'void' : 'ar',   // 'ar' (default: the live mirrored camera fills the screen) | 'void' (dev override: ?bg=void)
+    arDim: 0.94,                                // only a very light dim so the glow reads; natural colour, no desaturation
+  },
+
+  // AR compositing + hand-locked sigil (all of it inert in ?bg=void).
+  ar: {
+    refScale: 0.14,                             // wrist -> middle-knuckle length (image heights) of a hand at a normal distance
+    baseAtRef: 0.42,                            // sigil root scale at that hand size; grows/shrinks as the hand nears/leaves the camera
+    scaleExp: 1.0,                              // 1 = sigil size proportional to hand size on screen
+    scaleMin: 0.15, scaleMax: 1.6,              // clamp on the hand-scale factor, x the reference
+    predict: { gain: 0.9, maxLeadS: 0.12, minSpeed: 0.02, velTau: 0.05 },   // lead the palm by (camera latency + time since the last detection) x velocity
+    exposure: {
+      lo: 0.45, hi: 0.8,                        // backdrop luma range over which a wall counts as "bright"
+      glowBoost: 0.3,                           // extra glow intensity on a bright wall (x1 .. x1.3; more just blows out to white)
+      halo: 0.95,                               // how dark the soft halo behind the strokes gets on a bright wall: this is what makes them readable
+    },
+    toneExposure: 0.5,                          // the sigil is small on screen in AR, so the same energy per pixel reads hotter than the full-screen void one; pull it down
+    bloom: { strength: 0.5, radius: 0.3, threshold: 0.6 },
+    spill: { amount: 0.25, radius: 1.5, color: [1.0, 0.62, 0.24] },   // warm light spill on the video around the sigil (radial gradient, not real lighting)
+    // Soft hand-silhouette mask -> the sigil is drawn slightly behind the fingers. Off by default:
+    // a curled fist puts the fingers across the palm, which hides the sigil the fist is meant to shrink.
+    occlusion: { enabled: qs.get('occlusion') === '1', strength: 0.8, fingerWidth: 0.34, feather: 0.06, size: 256 },
+    sparkSpread: 1.0,                           // ember cloud radius, in sigil radii
   },
 
   floor: {
@@ -209,7 +229,8 @@ CFG.calib = {
 };
 
 CFG.tracker = {
-  width: 640, height: 480, fps: 30,
+  width: 1280, height: 720, fps: 30,     // the visible feed
+  detectWidth: 640,                      // detection runs on a downscaled copy of each frame (aspect kept), so the picture stays sharp and detection stays cheap
   dormantIdleS: 5.0,           // no hand seen this long -> drop detection rate
   dormantProbeHz: 15,          // ...down to this probe rate (worst case ~67ms extra before a new hand casts)
 };

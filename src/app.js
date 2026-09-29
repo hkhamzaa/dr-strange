@@ -21,6 +21,10 @@ import { makeBloom } from './stage/bloom.js';
 import { makeFloor } from './stage/floor.js';
 import { makeSparks } from './stage/sparks.js';
 import { makeBackground } from './stage/background.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { VideoFeed } from './stage/videoFeed.js';
+import { makeHandMask } from './stage/occlusion.js';
+import { coverScale, videoToScreen } from './stage/cover.js';
 import { Hud } from './hud/hud.js';
 import { AudioEngine } from './audio/engine.js';
 import { QualityGovernor } from './perf/governor.js';
@@ -59,10 +63,11 @@ class SigilSession {
       this.sigil.root.visible = true;
       if (p.from !== 'dismissing' && CFG.anchor.mode === 'hand') {
         // fresh cast: appear right on the palm, at the hand's size and roll, rather than easing in from wherever the last session ended
-        this.app.palmToWorld(this.hand.handX, this.hand.handY, this._xy);
+        this.app.palmTarget(this.hand, this._xy);
         this.sigil.snapTo(this._xy[0], this._xy[1], 0, -this.hand.roll * CFG.anchor.rollGain);
         this.sigil.setSizeT(this.hand.openness);
         this.sigil.scale = this.sigil.scaleTarget;
+        this.app.applyBase(this.hand, this.sigil, true);
       }
       this.sigil.cast();
       this.audio?.summon();
@@ -95,11 +100,12 @@ class SigilSession {
     on('pulse', (p) => { if (this.mine(p)) this.sigil.pulse(p?.component); });
   }
 
-  /** Palm position and roll follow, while shown and the hand is actually in view. */
+  /** Palm position, size and roll follow, while shown and the hand is actually in view. */
   applyFollow(t) {
     if (CFG.anchor.mode !== 'hand' || !this.stateMachine.shown || !this.hand.handVisible(t)) return;
-    this.app.palmToWorld(this.hand.handX, this.hand.handY, this._xy);
+    this.app.palmTarget(this.hand, this._xy);
     this.sigil.setPosition(this._xy[0], this._xy[1], 0);
+    this.app.applyBase(this.hand, this.sigil, false);
     this.sigil.setRoll(-this.hand.roll * CFG.anchor.rollGain);   // image roll is clockwise-positive; three.js z is counter-clockwise
   }
 
@@ -126,7 +132,10 @@ class App {
 
     const s = makeScene(THREE, this.canvas);
     this.scene = s.scene; this.camera = s.camera; this.renderer = s.renderer; this._resizeScene = s.resize; this._setDprClamp = s.setDprClamp;
-    const b = makeBloom(THREE, this.renderer, this.scene, this.camera);
+    this.background = makeBackground(THREE, this.video);
+    this.ar = this.background.ar;
+    // AR: the composite pass (camera + sigil) replaces the stock OutputPass as the last pass
+    const b = makeBloom(THREE, this.renderer, this.scene, this.camera, this.ar ? new ShaderPass(this.background.material) : undefined);
     this.composer = b.composer; this._resizeBloom = b.resize; this._bloomSetScale = b.setScale;
     this.canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); console.warn('WebGL context lost'); });
     this.canvas.addEventListener('webglcontextrestored', () => {
@@ -137,9 +146,17 @@ class App {
     });
 
     this.floor = makeFloor(THREE); this.scene.add(this.floor);
-    this.sparks = makeSparks(THREE); this.scene.add(this.sparks.points);
-    this.background = makeBackground(THREE, this.video); this.scene.add(this.background.mesh);
+    // void: one ember field over the floor. AR: one small cloud per sigil, riding on it
+    this.sparkList = this.ar ? [makeSparks(THREE, { ar: true }), makeSparks(THREE, { ar: true, seed: 4243 })] : [makeSparks(THREE)];
+    for (const sp of this.sparkList) { this.scene.add(sp.points); if (this.ar) sp.points.visible = false; }
+    this.sparks = this.sparkList[0];
+    if (!this.ar) this.scene.add(this.background.mesh);
     this.background.resize(this.camera);
+    this.feed = new VideoFeed(this.video);
+    this.mask = this.ar && CFG.ar.occlusion.enabled ? makeHandMask(THREE) : null;
+    if (this.mask) this.background.setMask(this.mask.texture, CFG.ar.occlusion.strength);
+    this._maskHands = [];
+    this._sc = [0, 0];
 
     this.ctl = new Controller();
     this.calib = new AutoCalib();
@@ -195,16 +212,18 @@ class App {
    *  boot — not mid-interaction, the first time a hand shows up. */
   _prewarm() {
     for (const sess of this.sessionList) sess.sigil.root.visible = true;
-    this.renderer.render(this.scene, this.camera);
+    for (const sp of this.sparkList) sp.points.visible = true;
+    this.composer.render();                     // every pass, so the bloom and composite programs compile here too
     for (const sess of this.sessionList) sess.sigil.root.visible = false;
+    if (this.ar) for (const sp of this.sparkList) sp.points.visible = false;
   }
 
   /** Quality governor callback — every lever a tier controls, applied in one place. */
   _applyTier(tier, tierCfg) {
     this._setDprClamp(tierCfg.dprClamp);
     this._bloomSetScale(tierCfg.bloomScale);
-    this.sparks.setCount(tierCfg.sparkCount);
-    this.floor.visible = tierCfg.reflection;
+    for (const sp of this.sparkList) sp.setCount(tierCfg.sparkCount / this.sparkList.length);
+    this.floor.visible = tierCfg.reflection && !this.ar;   // the floor and its reflection look wrong over a real room
     for (const sess of this.sessionList) sess.sigil.setShatterCellDensity(tierCfg.shatterCellsAngular, tierCfg.shatterCellsRadial);
     this._sigilBLayerFrac = tierCfg.sigilBLayerFrac;
     this.resize();
@@ -223,24 +242,61 @@ class App {
     this.background.resize(this.camera);
   }
 
-  /** Mirrored image coords -> world position on the sigil plane (z = 0), matching the AR
-   *  background's cover-crop so the sigil sits on the palm as the user sees it. */
+  /** Half the visible height of the z = 0 sigil plane, in world units. */
+  get halfH() { return CFG.camera.dist * Math.tan((this.camera.fov * Math.PI) / 360); }
+
+  /** Aspect of the picture the screen is showing (the screen's own when there isn't one, so the
+   *  whole camera frame maps onto the whole screen). */
+  get videoAspect() { return this.ar ? (this.background.videoAspect ?? this.camera.aspect) : this.camera.aspect; }
+
+  /** Mirrored image coords -> normalized screen coords (y down), with the same cover-fit transform
+   *  as the video, so a video pixel and the sigil on it land on the same screen pixel at any window size. */
+  palmToScreen(x, y, out) { return videoToScreen(x, y, this.camera.aspect, this.videoAspect, out); }
+
+  /** Mirrored image coords -> world position on the sigil plane (z = 0). */
   palmToWorld(x, y, out) {
-    const sa = this.camera.aspect;
-    const va = this.cam?.running && this.video.videoWidth ? this.video.videoWidth / this.video.videoHeight : sa;
-    let sx = x - 0.5, sy = y - 0.5;
-    if (sa > va) sy *= sa / va; else sx *= va / sa;
-    const halfH = CFG.camera.dist * Math.tan((this.camera.fov * Math.PI) / 360) * CFG.anchor.followGain;
-    out[0] = sx * 2 * halfH * sa;
-    out[1] = -sy * 2 * halfH;
+    const sc = this.palmToScreen(x, y, this._sc);
+    const halfH = this.halfH * CFG.anchor.followGain;
+    out[0] = (sc[0] - 0.5) * 2 * halfH * this.camera.aspect;
+    out[1] = -(sc[1] - 0.5) * 2 * halfH;
     return out;
+  }
+
+  /** Where the sigil should be drawn for a hand: its palm, led forward by its velocity. The
+   *  landmarks describe a frame that is (capture + detection + the wait for the next one) old by the
+   *  time a display frame shows it, and the exponential chase adds a little more, so the palm is
+   *  extrapolated by that much — lightly, and not at all for a hand that is basically still. */
+  palmTarget(track, out) {
+    const t = this.t;
+    let x = track.handX, y = track.handY;
+    const p = CFG.ar.predict;
+    if (this.ar && this.background.hasVideo) {
+      const speed = Math.hypot(track.vx, track.vy);
+      const w = Math.min(1, Math.max(0, (speed - p.minSpeed) / p.minSpeed));      // ramp in, so a jitter-level speed leads by nothing
+      const lead = Math.min(p.maxLeadS, Math.max(0, t - track.lastHandT) + CFG.anchor.followTau) * p.gain * w;
+      x += track.vx * lead; y += track.vy * lead;
+    }
+    return this.palmToWorld(x, y, out);
+  }
+
+  /** AR: the sigil's base size follows the hand's size in frame (closer hand -> bigger sigil), on
+   *  top of the openness-driven size. Leaves it at 1 when not in AR. (Writes the sigil directly
+   *  rather than returning a number: this runs every frame and must not allocate.) */
+  applyBase(track, sigil, snap) {
+    if (!this.ar || CFG.anchor.mode !== 'hand' || !track.scale) return;
+    const a = CFG.ar;
+    const f = Math.min(a.scaleMax, Math.max(a.scaleMin, track.scale / a.refScale)) ** a.scaleExp;
+    sigil.baseTarget = a.baseAtRef * f * coverScale(this.camera.aspect, this.videoAspect);
+    if (snap) sigil.base = sigil.baseTarget;
   }
 
   async startCamera(onStatus = () => {}, onEnded = () => {}) {
     this.cam?.stop();
+    this.feed.stop();
     const cam = this.cam = new HandCamera(this.video);
     cam.onHands = (hands, t) => this._onDetect(hands, t);
-    cam.onEnded = () => { cam.stop(); if (this.cam === cam) this.cam = null; onEnded(); };
+    cam.onPreview = () => this.feed.start();
+    cam.onEnded = () => { cam.stop(); this.feed.stop(); if (this.cam === cam) this.cam = null; onEnded(); };
     await cam.start(onStatus);
     this.lastEverHandSeenT = this.t;
   }
@@ -251,6 +307,24 @@ class App {
     this.ctl.onHands(hands, t);
     if (hands.length) this.lastEverHandSeenT = t;
     for (let i = 0; i < 2; i++) { const tr = this.ctl.tracks[i]; if (tr.present) this.calib.sample(tr.rawOpenness, tr.scale, t); }
+    if (this.mask) {
+      const list = this._maskHands; list.length = 0;
+      for (const tr of this.ctl.tracks) if (tr.present) list.push({ lm: tr.lm, scale: tr.scale });
+      this.mask.update(list, this.background.videoAspect ?? this.ctl.aspect);
+    }
+  }
+
+  /** AR per-frame layer: feeds the composite pass and the ember clouds from each sigil's live state. */
+  _updateAr() {
+    const sa = this.camera.aspect, h2 = this.halfH * 2, spillR = CFG.ar.spill.radius, su = this.background.sigilUniforms;
+    for (let i = 0; i < this.sessionList.length; i++) {
+      // plain field writes, no calls taking doubles: this runs every frame and must not allocate
+      const sg = this.sessionList[i].sigil, level = this.sessionList[i].shownLevel, u = su[i], pt = this.sparkList[i].points;
+      u.x = 0.5 + sg.pos[0] / (h2 * sa); u.y = 0.5 + sg.pos[1] / h2; u.z = (sg.radius / h2) * spillR; u.w = level;
+      pt.visible = level > 0.02;
+      pt.position.x = sg.pos[0]; pt.position.y = sg.pos[1];
+      pt.scale.x = pt.scale.y = pt.scale.z = sg.radius;
+    }
   }
 
   // ---------------------------------------------------------------- frame
@@ -274,14 +348,16 @@ class App {
       // nobody here for a while: probe at a lower detection rate until a hand shows up again
       this.cam.minInterval = !anyShown && t - this.lastEverHandSeenT >= CFG.tracker.dormantIdleS ? 1 / CFG.tracker.dormantProbeHz : 0;
       this.cam.pump(t * 1000);
-      if (this.cam.newFrame) { this.background.setHasVideo(true); this.cam.newFrame = false; }
     }
+    // one texture upload per NEW camera frame, not per display frame (and never on the detection path)
+    if (this.feed.consume(t * 1000)) this.background.uploadFrame();
 
     this.calib.update(t, dt);
     emit('handState', this.ctl.snapshot(t));
     for (let i = 0; i < this.sessionList.length; i++) this.sessionList[i].step(t, dt);
 
-    this.sparks.update(t);
+    if (this.ar) this._updateAr();
+    for (let i = 0; i < this.sparkList.length; i++) this.sparkList[i].update(t);
     const a = this.sessionList[0], b = this.sessionList[1];
     this.audio.setHum?.(Math.max(a.shownLevel, b.shownLevel) * a.sigil.intensity, a.sigil.spinMul);
     this.perf?.beginGpuQuery();
@@ -449,16 +525,20 @@ function boot() {
 
   async function enableCamera() {
     app.audio.unlock();
+    const btn = $('bEnableCam');
+    btn.disabled = true;
     try {
       await app.startCamera((s) => { const msg = $('startMsg'); if (msg) msg.textContent = s; }, lost);
     } catch (e) {
       console.error(e);
+      btn.disabled = false;
       showFallback(cameraErrorMessage(e), { retry: enableCamera, showIdle: true });
       idleShow();
       return;
     }
     sessionA.mapper.keepAlive = false;     // (after an earlier failure's idle display) back to presence-driven
     showFallback('');
+    btn.disabled = false;
     hideStart();
     document.documentElement.requestFullscreen?.().catch(() => {});
   }
@@ -499,6 +579,10 @@ function boot() {
       hint: app._hintShown,
     }),
     centerPixel: () => app.centerPixel(),
+    /** Normalized screen position (y down) that a mirrored image point is drawn at. */
+    palmToScreen: (x, y) => app.palmToScreen(x, y, [0, 0]),
+    /** Test hook: show a canvas as the AR backdrop, exactly as the camera frame would be. */
+    setBackdrop: (canvas) => { app.background.setSource(canvas); app.background.uploadFrame(); },
     cast: () => sessionA.sigil.cast(),
     uncast: () => sessionA.sigil.uncast(),
     explode: (v) => sessionA.sigil.explode(v),

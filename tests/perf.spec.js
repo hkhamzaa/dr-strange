@@ -46,7 +46,7 @@ test('zero-allocation: our frame loop allocates no objects, closures or iterator
     W.advance(2.0, () => [L, R]);
     W.setHand(null);                                                  // no detections: pure render-side frames
     A.composer.render = () => {};
-    for (let i = 0; i < 200; i++) A.frame(A.t + 1 / 2000);            // warm up (JIT)
+    for (let i = 0; i < 600; i++) A.frame(A.t + 1 / 20000);           // warm up (JIT): enough for every per-frame path, AR layer included, to reach optimized code
     let best = Infinity;
     for (let rep = 0; rep < 3; rep++) {
       window.gc();
