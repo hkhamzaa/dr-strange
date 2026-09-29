@@ -1,7 +1,7 @@
 // Minimal offline shell. The camera never goes through fetch (getUserMedia is a separate browser
 // API), so there is nothing camera-related to exclude here — this only ever sees GET requests for
 // the page, its hashed JS/CSS, and the vendored three/MediaPipe/model assets.
-const CACHE = 'sigil-v2';
+const CACHE = 'sigil-v3';
 
 self.addEventListener('install', (e) => { self.skipWaiting(); });
 
@@ -15,7 +15,11 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   const req = e.request;
-  if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
+  const url = new URL(req.url);
+  if (req.method !== 'GET' || url.origin !== location.origin) return;
+  // vendor/ (three, MediaPipe wasm, the model) is big, versioned by the pinned package, and the tracker's own
+  // loading depends on getting exact bytes: never cache or answer it here, always straight to the network
+  if (url.pathname.includes('/vendor/')) return;
 
   // index.html is unhashed and changes on every deploy — always prefer the network, cache as a
   // fallback for offline use. Everything else is content-hashed (or third-party-versioned) so a
@@ -37,7 +41,7 @@ self.addEventListener('fetch', (e) => {
     const hit = await caches.match(req);
     if (hit) return hit;
     const res = await fetch(req);
-    if (res.ok) (await caches.open(CACHE)).put(req, res.clone());
+    if (res.status === 200) (await caches.open(CACHE)).put(req, res.clone());
     return res;
   })());
 });

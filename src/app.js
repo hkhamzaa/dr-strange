@@ -297,7 +297,8 @@ class App {
     cam.onHands = (hands, t) => this._onDetect(hands, t);
     cam.onPreview = () => this.feed.start();
     cam.onEnded = () => { cam.stop(); this.feed.stop(); if (this.cam === cam) this.cam = null; onEnded(); };
-    await cam.start(onStatus);
+    try { await cam.start(onStatus); }
+    catch (e) { this.feed.stop(); throw e; }
     this.lastEverHandSeenT = this.t;
   }
 
@@ -526,12 +527,19 @@ function boot() {
   async function enableCamera() {
     app.audio.unlock();
     const btn = $('bEnableCam');
-    btn.disabled = true;
+    btn.disabled = true; btn.hidden = false;
+    showFallback('');                         // clears an earlier failure's message and its Retry button
     try {
       await app.startCamera((s) => { const msg = $('startMsg'); if (msg) msg.textContent = s; }, lost);
     } catch (e) {
       console.error(e);
       btn.disabled = false;
+      if (e?.name === 'TrackerLoadError') {
+        // the camera works but the tracker files don't: say so, with the failing URL, and offer Retry (no idle sigil — that would look like it worked)
+        btn.hidden = true;
+        showFallback(e.message, { retry: enableCamera, showIdle: true });
+        return;
+      }
       showFallback(cameraErrorMessage(e), { retry: enableCamera, showIdle: true });
       idleShow();
       return;

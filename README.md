@@ -176,6 +176,7 @@ All three give HTTPS automatically, which the camera requires off `localhost`.
 | `?bg=void` | Dev override: the old dark vignette stage instead of the camera. **AR — the live camera fullscreen — is the default**; there is no flag for it |
 | `?occlusion=1` | Draw the sigil slightly behind the fingers (soft finger-silhouette mask; off by default) |
 | `?dismiss=uncast\|dissolve\|shatter` | What "hand gone" looks like (default the fast uncast) |
+| `?loadtimeout=<s>` | How long the hand tracker may take to load before the start screen shows an error + Retry (default 15) |
 | `?dpr=<n>`, `?mute=1` | Device-pixel-ratio clamp; start muted |
 | `?manual=1` | Deterministic clock for tests — frames only advance via `window.sigilApp.advance()`; the real camera is never started |
 
@@ -226,6 +227,7 @@ die young and are collected by the cheap nursery GC.
   the tracker reports.
 - **"This browser cannot access a camera"** — use `localhost` or HTTPS.
 - **Camera denied / not found / lost** — an idle sigil shows and a **Retry camera** button appears.
+- **Stuck on "Loading hand tracker…" / "The hand tracker didn't load"** — the tracker (`vendor/mediapipe/*` wasm and `vendor/models/hand_landmarker.task`, ~30 MB) has 15 s to load. If it doesn't, the start screen names the URL that is wrong (HTTP status, wrong MIME type, or a truncated/HTML-error body) and logs it to the console as `[sigil] failing URL: …`, with a Retry button. On a host, check that `/vendor/models/hand_landmarker.task` returns the full ~7.8 MB as `application/octet-stream` and the `.wasm` files return `application/wasm`. The service worker never caches or answers `vendor/` requests.
 - **WebGL2 unsupported** — the start screen says so; use a recent Chrome, Edge, Firefox or Safari.
 - **Low frame rate** — `?perf=1` shows render/detection fps; `?quality=low` isolates GPU cost.
 - **No sound** — audio unlocks on the "Enable camera" click; check `?mute=1` isn't set.

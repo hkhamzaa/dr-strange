@@ -13,6 +13,33 @@ const MODEL = new URL('vendor/models/hand_landmarker.task', location.href).href;
 
 const pts = () => Array.from({ length: 21 }, () => [0, 0]);
 
+/** Fetch each asset the tracker needs and report what's wrong with any that isn't right: status,
+ *  MIME type, and size (a truncated file or an HTML error page served with 200 both show up as
+ *  "too small"). Only ever run after a failed/slow load, to name the URL responsible. */
+export async function diagnoseAssets(budgetMs = 10000) {
+  const checks = [
+    [VISION, /javascript/, 50e3],
+    [`${WASM}/vision_wasm_internal.js`, /javascript/, 50e3],
+    [`${WASM}/vision_wasm_internal.wasm`, /application\/wasm/, 5e6],
+    [MODEL, null, 5e6],
+  ];
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), budgetMs);
+  try {
+    return await Promise.all(checks.map(async ([url, type, minBytes]) => {
+      try {
+        const r = await fetch(url, { cache: 'no-store', signal: ctl.signal });
+        const bytes = (await r.arrayBuffer()).byteLength, ct = r.headers.get('content-type') || '';
+        const problem = !r.ok ? `HTTP ${r.status}` : type && !type.test(ct) ? `wrong content-type "${ct}"`
+          : bytes < minBytes ? `only ${bytes} bytes (truncated, or an error page served as 200)` : null;
+        return { url, status: r.status, type: ct, bytes, problem };
+      } catch (e) {
+        return { url, problem: e.name === 'AbortError' ? `no complete response within ${budgetMs} ms` : `network error: ${e.message}` };
+      }
+    }));
+  } finally { clearTimeout(timer); }
+}
+
 export class HandCamera {
   constructor(video) {
     this.video = video;
@@ -63,12 +90,29 @@ export class HandCamera {
     this.onPreview?.();          // the live picture can show now, while the tracker is still loading
     onStatus('Loading hand tracker…');
     const ended = () => Object.assign(new Error('The camera stopped while the hand tracker was loading.'), { name: 'NotReadableError' });
-    try { await this._startWorker(); this.mode = 'worker'; }
+    const load = async () => {
+      try { await this._startWorker(); this.mode = 'worker'; }
+      catch (e) {
+        if (this._stopped) throw ended();
+        console.warn('worker detection unavailable, detecting on the main thread instead', e);
+        await this._startMain(); this.mode = 'main';
+      }
+    };
+    // never hang on "Loading hand tracker…": past the limit (or on a load error) find out which asset
+    // is at fault, log its URL, and fail with a message the start screen can show next to a Retry
+    let timer;
+    const limit = new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('timeout'), { timedOut: true })), c.loadTimeoutS * 1000); });
+    try { await Promise.race([load(), limit]); }
     catch (e) {
       if (this._stopped) throw ended();
-      console.warn('worker detection unavailable, detecting on the main thread instead', e);
-      await this._startMain(); this.mode = 'main';
-    }
+      const report = await diagnoseAssets();
+      const bad = report.find((r) => r.problem);
+      console.error('[sigil] hand tracker failed to load', e, '\nasset check:', report);
+      if (bad) console.error(`[sigil] failing URL: ${bad.url} — ${bad.problem}`);
+      this.stop();
+      const why = e.timedOut ? `didn't load within ${c.loadTimeoutS} s` : `failed to load (${String(e.message).split(String.fromCharCode(10))[0].slice(0, 120)})`;
+      throw Object.assign(new Error(`The hand tracker ${why}. ${bad ? `Problem: ${bad.url} — ${bad.problem}.` : 'All its files fetched fine, so it may just be a slow connection or device.'}`), { name: 'TrackerLoadError', url: bad?.url });
+    } finally { clearTimeout(timer); }
     if (this._stopped || track?.readyState === 'ended') { this.stop(); throw ended(); }
     this.running = true;
     onStatus('');
@@ -105,6 +149,7 @@ export class HandCamera {
     });
     try { this.landmarker = await make('GPU'); this.delegate = 'GPU'; }
     catch (e) { console.warn('GPU delegate failed, falling back to CPU', e); this.landmarker = await make('CPU'); this.delegate = 'CPU'; }
+    if (this._stopped) { this.landmarker.close?.(); this.landmarker = null; return; }    // the load timed out while we were still building
     this.landmarker.detectForVideo(this.video, this._nextTs());     // warm-up (GPU program compile) behind the loading message
   }
 

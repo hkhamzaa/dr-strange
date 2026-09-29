@@ -1,7 +1,7 @@
 // AR is the default: the mirrored camera fills the screen and the sigil is pinned to the palm with
 // the same cover-fit transform as the picture. These tests check that end to end, on real pixels.
 import { test, expect } from '@playwright/test';
-import { watchErrors, openApp, status } from './helpers.js';
+import { watchErrors, openApp, status, fakeCamera } from './helpers.js';
 
 test('a palm coordinate lands on the same screen pixel as the same video pixel, at any window aspect', async ({ page }) => {
   const noErrors = watchErrors(page);
@@ -63,6 +63,7 @@ test('the sigil sits on the palm: its world position projects to the palm\'s scr
 test('boot in AR with the fake camera: the canvas shows the live picture, not black', async ({ page }) => {
   test.setTimeout(120_000);
   const noErrors = watchErrors(page);
+  await fakeCamera(page);
   await page.goto('/?autostart=1&dpr=1');
   await page.waitForFunction(() => window.sigilApp);
   await page.waitForFunction(() => window.sigilApp.app.background.hasVideo, null, { timeout: 60_000 });

@@ -24,3 +24,16 @@ export async function shot(page, name) {
 }
 
 export const status = (page) => page.evaluate(() => window.sigilApp.status());
+
+/** A deterministic stand-in for getUserMedia: an animated 1280x720 canvas stream. Chrome's own fake
+ *  capture device can only be opened reliably once per browser process (later opens fail with
+ *  NotFoundError / "in use"), which makes any test that (re)starts the camera flaky. */
+export async function fakeCamera(page) {
+  await page.addInitScript(() => {
+    const c = document.createElement('canvas'); c.width = 1280; c.height = 720;
+    const g = c.getContext('2d'); let n = 0;
+    const draw = () => { g.fillStyle = '#3a6b4a'; g.fillRect(0, 0, 1280, 720); g.fillStyle = '#e8d9a8'; g.fillRect((n * 7) % 1200, 300, 80, 80); n++; };
+    draw(); setInterval(draw, 33);
+    navigator.mediaDevices.getUserMedia = async () => c.captureStream(30);
+  });
+}

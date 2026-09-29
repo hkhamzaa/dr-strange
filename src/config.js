@@ -231,6 +231,7 @@ CFG.calib = {
 CFG.tracker = {
   width: 1280, height: 720, fps: 30,     // the visible feed
   detectWidth: 640,                      // detection runs on a downscaled copy of each frame (aspect kept), so the picture stays sharp and detection stays cheap
+  loadTimeoutS: 15,            // the hand tracker (wasm + model) must be up within this, or the load fails with a message and a Retry
   dormantIdleS: 5.0,           // no hand seen this long -> drop detection rate
   dormantProbeHz: 15,          // ...down to this probe rate (worst case ~67ms extra before a new hand casts)
 };
@@ -241,6 +242,7 @@ CFG.hint = { afterS: 1.2 };    // camera running, no hand this long -> "Show you
 if (qs.get('dpr')) CFG.dpr.clamp = parseFloat(qs.get('dpr'));
 if (qs.get('dismiss')) CFG.dismiss.style = qs.get('dismiss');
 if (qs.get('mute') === '1') CFG.audio.muted = true;
+if (qs.get('loadtimeout')) CFG.tracker.loadTimeoutS = parseFloat(qs.get('loadtimeout'));
 export const FLAGS = {
   manual: qs.get('manual') === '1',     // deterministic clock: frames only advance via sigilApp.advance()
   autostart: qs.get('autostart') === '1',
